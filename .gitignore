@@ -1,0 +1,13 @@
+# 密钥与环境配置
+.env
+
+# 运行产物（详设 §7.4 约定）
+logs/
+data/
+e2e/actual/
+
+# 系统
+.DS_Store
+
+HANDOFF.md
+后端实习生笔试项目：「录音转写服务」API.md

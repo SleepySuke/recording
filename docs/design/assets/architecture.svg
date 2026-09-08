@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="850" viewBox="0 0 1200 850">
+<style>text{font-family:Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;fill:#111827} .sub{fill:#6b7280;font-size:15px} .label{font-size:15px}</style>
+<defs>
+<marker id="blue" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto-start-reverse"><path d="M0,0 L8,3.5 L0,7 Z" fill="#2563eb"/></marker>
+<marker id="green" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto-start-reverse"><path d="M0,0 L8,3.5 L0,7 Z" fill="#059669"/></marker>
+<marker id="gray" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto-start-reverse"><path d="M0,0 L8,3.5 L0,7 Z" fill="#6b7280"/></marker>
+</defs>
+<rect width="1200" height="850" fill="#ffffff"/>
+<text x="60" y="48" font-size="25" font-weight="600">录音转写与智能摘要 · 总体架构</text>
+<text x="60" y="78" class="sub">单个 Go 应用：HTTP 与 worker 同进程；MySQL 独立运行</text>
+<rect x="60" y="140" width="240" height="100" rx="8" fill="#eff6ff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="180" y="191" text-anchor="middle" font-size="19" font-weight="600">客户端</text>
+<text x="180" y="218" text-anchor="middle" class="sub">curl / Postman / 后续前端</text>
+<rect x="480" y="140" width="240" height="100" rx="8" fill="#eff6ff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="600" y="191" text-anchor="middle" font-size="19" font-weight="600">Gin + Application</text>
+<text x="600" y="218" text-anchor="middle" class="sub">上传 · 查询 · 重试 · 删除</text>
+<rect x="900" y="140" width="240" height="100" rx="8" fill="#fff7ed" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="1020" y="191" text-anchor="middle" font-size="19" font-weight="600">本地录音卷</text>
+<text x="1020" y="218" text-anchor="middle" class="sub">文件字节与清理</text>
+<rect x="60" y="390" width="240" height="100" rx="8" fill="#eff6ff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="180" y="441" text-anchor="middle" font-size="19" font-weight="600">Worker Pool</text>
+<text x="180" y="468" text-anchor="middle" class="sub">默认 3 并发 · 同进程</text>
+<path d="M480,406 C480,384 720,384 720,406 V474 C720,496 480,496 480,474 Z" fill="#f0fdf4" stroke="#a7cdb8" stroke-width="1.5"/>
+<path d="M480,406 C480,428 720,428 720,406" fill="none" stroke="#a7cdb8"/>
+<text x="600" y="448" text-anchor="middle" font-size="19" font-weight="600">MySQL</text>
+<text x="600" y="474" text-anchor="middle" font-size="14" class="sub">recordings · tasks · task_events</text>
+<rect x="900" y="390" width="240" height="100" rx="8" fill="#f0fdfa" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="1020" y="435" text-anchor="middle" font-size="19" font-weight="600">logs/ 文件日志</text>
+<text x="1020" y="465" text-anchor="middle" class="sub">app.jsonl · stdout 镜像</text>
+<rect x="60" y="650" width="240" height="100" rx="8" fill="#eff6ff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="180" y="701" text-anchor="middle" font-size="19" font-weight="600">Mock ASR</text>
+<text x="180" y="728" text-anchor="middle" class="sub">5–15 秒 · 约 20% 失败</text>
+<rect x="480" y="650" width="240" height="100" rx="8" fill="#faf5ff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="600" y="701" text-anchor="middle" font-size="19" font-weight="600">LLM 适配器</text>
+<text x="600" y="728" text-anchor="middle" class="sub">超时处理 · JSON 校验</text>
+<rect x="900" y="650" width="240" height="100" rx="8" fill="#faf5ff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="1020" y="701" text-anchor="middle" font-size="19" font-weight="600">真实 LLM API</text>
+<text x="1020" y="728" text-anchor="middle" class="sub">外部供应商</text>
+<path d="M300,180 H480" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)" marker-start="url(#blue)"/>
+<rect x="340" y="154" width="100" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="390" y="170" text-anchor="middle" class="label">HTTP / JSON</text>
+<path d="M720,190 H900" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#green)"/>
+<rect x="747" y="164" width="126" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="810" y="180" text-anchor="middle" class="label">音频保存 / 删除</text>
+<path d="M600,240 V384" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#green)" marker-start="url(#green)"/>
+<rect x="607" y="295" width="165" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="690" y="311" text-anchor="middle" class="label">元数据 / 状态 / 结果</text>
+<path d="M300,414 H480" fill="none" stroke="#6b7280" stroke-width="2" marker-end="url(#gray)" stroke-dasharray="6,4"/>
+<rect x="317" y="388" width="147" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="390" y="404" text-anchor="middle" class="label">SKIP LOCKED 认领</text>
+<path d="M300,468 H480" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#green)"/>
+<rect x="315" y="442" width="150" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="390" y="458" text-anchor="middle" class="label">阶段 / 产物 / 错误</text>
+<path d="M145,490 V650" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)" marker-start="url(#blue)"/>
+<rect x="69" y="558" width="161" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="150" y="574" text-anchor="middle" class="label">元数据 / transcript</text>
+<path d="M270,490 V550 H360 V695 H480" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)" marker-start="url(#blue)"/>
+<rect x="317" y="614" width="141" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="388" y="630" text-anchor="middle" class="label">文本 / 摘要或错误</text>
+<path d="M720,700 H900" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)" marker-start="url(#blue)"/>
+<rect x="762" y="673" width="96" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="810" y="689" text-anchor="middle" class="label">请求 / 响应</text>
+<path d="M720,215 H840 V330 H1020 V390" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+<rect x="867" y="302" width="126" height="25" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="930" y="320" text-anchor="middle" class="label">访问与运行日志</text>
+<path d="M300,485 H450 V560 H1080 V490" fill="none" stroke="#6b7280" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#gray)"/>
+<rect x="620" y="534" width="160" height="23" rx="3" fill="#ffffff" opacity="0.97"/>
+<text x="700" y="550" text-anchor="middle" class="label">事件镜像（提交后）</text>
+<path d="M60,808 H102" stroke="#2563eb" stroke-width="2" marker-end="url(#blue)"/>
+<text x="113" y="813" class="sub">请求与数据</text>
+<path d="M290,808 H332" stroke="#059669" stroke-width="2" marker-end="url(#green)"/>
+<text x="343" y="813" class="sub">持久化读写</text>
+<path d="M520,808 H562" stroke="#6b7280" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#gray)"/>
+<text x="573" y="813" class="sub">后台调度与镜像</text>
+<text x="800" y="813" class="sub">Mock ASR 不读取或解码音频</text>
+</svg>
