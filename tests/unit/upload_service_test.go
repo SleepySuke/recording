@@ -48,7 +48,8 @@ func newUploadEnvSvc(t *testing.T, minFreeBytes uint64, tx *stubRecordingTx) (*r
 		t.Fatalf("创建本地文件存储失败: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return recording.NewUploadService(store, tx, logger, "unit-instance"), dir
+	// 本文件只测上传链：不驱动 worker 池，notifier 传 nil（Upload 内部判空）。
+	return recording.NewUploadService(store, tx, nil, logger, "unit-instance"), dir
 }
 
 // appErrCode 断言错误为 *errorcode.AppError 并返回业务码。

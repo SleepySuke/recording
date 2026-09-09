@@ -3,11 +3,14 @@ package mysql
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // Open 按详设约定初始化连接：parseTime=true、loc=UTC、会话 time_zone='+00:00'、
@@ -25,7 +28,16 @@ func Open(dsn string) (*gorm.DB, error) {
 		"transaction_isolation": "'READ-COMMITTED'",
 	}
 
-	db, err := gorm.Open(gormmysql.New(gormmysql.Config{DSN: cfg.FormatDSN()}), &gorm.Config{})
+	db, err := gorm.Open(gormmysql.New(gormmysql.Config{DSN: cfg.FormatDSN()}), &gorm.Config{
+		Logger: logger.New(
+			log.New(os.Stdout, "\n[gorm] ", log.LstdFlags),
+			logger.Config{
+				SlowThreshold:             200 * time.Millisecond,
+				LogLevel:                  logger.Warn,
+				IgnoreRecordNotFoundError: true, // 认领轮询/查询未命中是常态（详设 §4.3），不刷错误日志
+			},
+		),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("连接 MySQL 失败: %w", err)
 	}

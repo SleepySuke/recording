@@ -65,7 +65,7 @@ func newUploadEnv(t *testing.T) (*gin.Engine, *gorm.DB, string, string) {
 	if err != nil {
 		t.Fatalf("初始化测试数据目录失败: %v", err)
 	}
-	svc := apprec.NewUploadService(store, mysql.NewRecordingTx(db), logger, itInstanceID)
+	svc := apprec.NewUploadService(store, mysql.NewRecordingTx(db), nil, logger, itInstanceID)
 	h := handler.NewUploadHandler(svc, logger, handler.UploadLimits{
 		MaxBodyBytes:    itMaxBodyBytes,
 		ReadIdleTimeout: 10 * time.Second,

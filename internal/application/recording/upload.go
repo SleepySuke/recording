@@ -34,13 +34,14 @@ type UploadResult struct {
 type UploadService struct {
 	store      ports.FileStore
 	tx         ports.RecordingTx
+	notifier   ports.Notifier // 提交成功后非阻塞唤醒 worker 池（详设 §3.3）
 	logger     *slog.Logger
 	instanceID string // 事件产生实例标识（详设 §7.2 instance_id）
 }
 
-// NewUploadService 构造上传用例。
-func NewUploadService(store ports.FileStore, tx ports.RecordingTx, logger *slog.Logger, instanceID string) *UploadService {
-	return &UploadService{store: store, tx: tx, logger: logger, instanceID: instanceID}
+// NewUploadService 构造上传用例；notifier 为上传链收口的唤醒出口（详设 §2.5）。
+func NewUploadService(store ports.FileStore, tx ports.RecordingTx, notifier ports.Notifier, logger *slog.Logger, instanceID string) *UploadService {
+	return &UploadService{store: store, tx: tx, notifier: notifier, logger: logger, instanceID: instanceID}
 }
 
 // Upload 执行完整上传链，错误一律包装 *errorcode.AppError（详设 §8.2/§8.3 映射）；
@@ -128,7 +129,11 @@ func (s *UploadService) Upload(ctx context.Context, req UploadRequest) (UploadRe
 		return UploadResult{}, errorcode.New(errorcode.CodeDatabaseUnavailable, err)
 	}
 
-	// 提交成功：事件镜像（尽力而为，详设 §7.4）+ 202 所需结果。
+	// 提交成功：非阻塞唤醒 worker 认领（详设 §2.5/§3.3；丢失由 1s 轮询兜底），
+	// 随后事件镜像（尽力而为，详设 §7.4）+ 202 所需结果。
+	if s.notifier != nil {
+		s.notifier.Notify()
+	}
 	logging.MirrorEvent(s.logger, event)
 	s.logger.Info("上传完成",
 		slog.String("recording_id", recordingID),

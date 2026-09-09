@@ -1,4 +1,5 @@
-// 录音转写服务入口。启动序列（健康检查→迁移→恢复→就绪）按任务 T02/T11 逐步接入（详设 §6.2）。
+// 录音转写服务入口。启动序列（健康检查→迁移→恢复→就绪）按任务 T02/T11 逐步接入（详设 §6.2）；
+// 信号驱动的优雅退出在 T10 接入。
 package main
 
 import (
@@ -14,13 +15,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "配置错误:", err)
 		os.Exit(1)
 	}
-	srv, logger, err := bootstrap.NewServer(cfg)
+	srv, logger, shutdown, err := bootstrap.NewServer(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "初始化失败:", err)
 		os.Exit(1)
 	}
 	logger.Info("service listening", "addr", cfg.HTTPAddr)
-	if err := srv.ListenAndServe(); err != nil {
+	err = srv.ListenAndServe()
+	shutdown() // 停止 worker 池并等待退出（T10 接入信号与 drain 预算）
+	if err != nil {
 		logger.Error("server exited", "err", err)
 		os.Exit(1)
 	}
