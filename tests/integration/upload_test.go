@@ -71,7 +71,9 @@ func newUploadEnv(t *testing.T) (*gin.Engine, *gorm.DB, string, string) {
 		ReadIdleTimeout: 10 * time.Second,
 		TotalTimeout:    time.Minute,
 	})
-	return httpapi.New(logger, h), db, dataDir, logDir
+	// T05 起查询接口与上传共用同一引擎与测试库（只读，不影响上传断言）。
+	queryHandler := handler.NewQueryHandler(apprec.NewQueryService(mysql.NewRecordingQuery(db), logger), logger)
+	return httpapi.New(logger, h, queryHandler), db, dataDir, logDir
 }
 
 type formPart struct {

@@ -12,8 +12,8 @@ import (
 )
 
 // New 构建 Gin 引擎并注册健康接口。upload 非 nil 时挂载 POST /v1/recordings（T04）；
-// 其余业务路由随任务 T05～T09 逐步挂载。
-func New(logger *slog.Logger, upload *handler.UploadHandler) *gin.Engine {
+// query 非 nil 时挂载三个只读查询接口（T05，详设 §8.1）；其余业务路由随 T06～T09 逐步挂载。
+func New(logger *slog.Logger, upload *handler.UploadHandler, query *handler.QueryHandler) *gin.Engine {
 	r := gin.New()
 	r.Use(
 		middleware.RequestID(),
@@ -38,6 +38,11 @@ func New(logger *slog.Logger, upload *handler.UploadHandler) *gin.Engine {
 	})
 	if upload != nil {
 		r.POST("/v1/recordings", upload.Handle)
+	}
+	if query != nil {
+		r.GET("/v1/tasks/:id", query.HandleTask)
+		r.GET("/v1/recordings", query.HandleList)
+		r.GET("/v1/recordings/:id", query.HandleRecording)
 	}
 	return r
 }

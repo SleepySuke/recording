@@ -22,3 +22,26 @@ func New() string {
 	}
 	return string(buf)
 }
+
+// IsValid 报告 s 是否为规范 36 字符 UUID 形态（8-4-4-4-12 十六进制，大小写均可）。
+// 用于路径参数校验：形态非法属参数错误（400/10001，详设 §8.3），而非资源不存在。
+func IsValid(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
+}

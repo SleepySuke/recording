@@ -46,10 +46,12 @@ func NewServer(cfg *Config) (*http.Server, *slog.Logger, error) {
 		ReadIdleTimeout: cfg.UploadReadTimeout,
 		TotalTimeout:    cfg.UploadTotalTimeout,
 	})
+	querySvc := recording.NewQueryService(mysql.NewRecordingQuery(db), logger)
+	queryHandler := handler.NewQueryHandler(querySvc, logger)
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
-		Handler: httpapi.New(logger, uploadHandler),
+		Handler: httpapi.New(logger, uploadHandler, queryHandler),
 	}
 	return srv, logger, nil
 }
