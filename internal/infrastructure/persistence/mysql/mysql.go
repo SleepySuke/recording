@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	mysqldriver "github.com/go-sql-driver/mysql"
 )
 
 // Open 按详设约定初始化连接：parseTime=true、loc=UTC、会话 time_zone='+00:00'、

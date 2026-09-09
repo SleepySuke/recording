@@ -27,8 +27,8 @@ func Render(c *gin.Context, err error) {
 	}
 	c.JSON(status, gin.H{
 		"error": gin.H{
-			"code":      int(appErr.Code),
-			"message":  appErr.Code.Message(),
+			"code":       int(appErr.Code),
+			"message":    appErr.Code.Message(),
 			"request_id": c.MustGet("request_id"),
 		},
 	})

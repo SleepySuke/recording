@@ -43,27 +43,27 @@ func (TaskPO) TableName() string { return "tasks" }
 // TaskEventPO 任务生命周期事件（task_events 表，详设 §7.2 全 21 列）；
 // 与状态变更同事务写入，UNIQUE(task_id, event_seq) 保证顺序，写入后不修改。
 type TaskEventPO struct {
-	ID              int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	EventID         string    `gorm:"column:event_id;size:36;uniqueIndex:uq_task_events_event_id"`
-	TaskID          string    `gorm:"column:task_id;size:36;uniqueIndex:uq_task_events_seq,priority:1"`
-	RecordingID     string    `gorm:"column:recording_id;size:36"`
-	EventSeq        int64     `gorm:"column:event_seq;uniqueIndex:uq_task_events_seq,priority:2"`
-	Attempt         int       `gorm:"column:attempt"`
-	Event           string    `gorm:"column:event;size:64"`
-	OccurredAt      time.Time `gorm:"column:occurred_at"`
-	Level           string    `gorm:"column:level;size:8"`
-	FromStatus      *string   `gorm:"column:from_status;size:32"`
-	ToStatus        *string   `gorm:"column:to_status;size:32"`
-	Stage           *string   `gorm:"column:stage;size:32"`
-	RequestID       *string   `gorm:"column:request_id;size:64"`
-	CreatedRequestID string   `gorm:"column:created_request_id;size:64"`
-	InstanceID      string    `gorm:"column:instance_id;size:36"`
-	ErrorCode       *int      `gorm:"column:error_code"`
-	ErrorMessage    *string   `gorm:"column:error_message;size:512"`
-	StageElapsedMs  *int64    `gorm:"column:stage_elapsed_ms"`
-	AttemptElapsedMs *int64   `gorm:"column:attempt_elapsed_ms"`
-	TaskElapsedMs   *int64    `gorm:"column:task_elapsed_ms"`
-	Details         string    `gorm:"column:details;type:json"`
+	ID               int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	EventID          string    `gorm:"column:event_id;size:36;uniqueIndex:uq_task_events_event_id"`
+	TaskID           string    `gorm:"column:task_id;size:36;uniqueIndex:uq_task_events_seq,priority:1"`
+	RecordingID      string    `gorm:"column:recording_id;size:36"`
+	EventSeq         int64     `gorm:"column:event_seq;uniqueIndex:uq_task_events_seq,priority:2"`
+	Attempt          int       `gorm:"column:attempt"`
+	Event            string    `gorm:"column:event;size:64"`
+	OccurredAt       time.Time `gorm:"column:occurred_at"`
+	Level            string    `gorm:"column:level;size:8"`
+	FromStatus       *string   `gorm:"column:from_status;size:32"`
+	ToStatus         *string   `gorm:"column:to_status;size:32"`
+	Stage            *string   `gorm:"column:stage;size:32"`
+	RequestID        *string   `gorm:"column:request_id;size:64"`
+	CreatedRequestID string    `gorm:"column:created_request_id;size:64"`
+	InstanceID       string    `gorm:"column:instance_id;size:36"`
+	ErrorCode        *int      `gorm:"column:error_code"`
+	ErrorMessage     *string   `gorm:"column:error_message;size:512"`
+	StageElapsedMs   *int64    `gorm:"column:stage_elapsed_ms"`
+	AttemptElapsedMs *int64    `gorm:"column:attempt_elapsed_ms"`
+	TaskElapsedMs    *int64    `gorm:"column:task_elapsed_ms"`
+	Details          string    `gorm:"column:details;type:json"`
 }
 
 func (TaskEventPO) TableName() string { return "task_events" }

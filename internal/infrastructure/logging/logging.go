@@ -14,11 +14,11 @@ import (
 
 // Options 日志初始化参数（详设 §7.4：轮转 20MiB / 5 备份 / 7 天；目录可写是启动检查项）。
 type Options struct {
-	Dir         string
-	Level       string
-	MaxSizeMB   int
-	MaxBackups  int
-	MaxAgeDays  int
+	Dir        string
+	Level      string
+	MaxSizeMB  int
+	MaxBackups int
+	MaxAgeDays int
 }
 
 // New 创建目录并返回双写 logger；stdout 便于容器观察，文件供事后检索。
@@ -27,10 +27,10 @@ func New(opt Options) (*slog.Logger, error) {
 		return nil, fmt.Errorf("日志目录不可创建: %w", err)
 	}
 	file := &lumberjack.Logger{
-		Filename: filepath.Join(opt.Dir, "app.jsonl"),
-		MaxSize:  opt.MaxSizeMB,
+		Filename:   filepath.Join(opt.Dir, "app.jsonl"),
+		MaxSize:    opt.MaxSizeMB,
 		MaxBackups: opt.MaxBackups,
-		MaxAge:   opt.MaxAgeDays,
+		MaxAge:     opt.MaxAgeDays,
 	}
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(opt.Level)); err != nil {
