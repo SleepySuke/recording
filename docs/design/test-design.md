@@ -1,6 +1,6 @@
 # 测试设计：单元、集成与 E2E
 
-状态：实施前设计。对应 [总体架构](architecture.md) 与 [详细技术设计](technical-design.md)（用例的"设计依据"列指向其章节），排期见 [开发计划](../plan/development-plan.md)。
+状态：实施前设计。对应 [总体架构](architecture.md) 与 [详细技术设计](technical-design.md)（用例的"设计依据"列指向其章节），任务排期见[任务文档](../plan/tasks/T01-bootstrap.md)（同目录 T01～T14）。
 
 ## 1. 分层策略
 

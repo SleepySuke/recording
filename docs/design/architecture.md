@@ -1,6 +1,6 @@
 # 录音转写服务总体架构
 
-状态：设计阶段；Go、MySQL 已确定，尚未开始业务代码实现。实现协议与选型对比见 [详细技术设计](technical-design.md)，排期与验收见 [开发计划](../plan/development-plan.md)。
+状态：设计阶段；Go、MySQL 已确定，尚未开始业务代码实现。实现协议与选型对比见 [详细技术设计](technical-design.md)，开发任务见 [任务文档](../plan/tasks/T01-bootstrap.md)（T01～T14 顺序执行）。
 
 依据：根目录《后端实习生笔试项目：「录音转写服务」API.md》。开发预算 12～16 小时，7 个自然日内提交。
 
@@ -275,5 +275,5 @@ flowchart LR
 ## 7. 相关文档
 
 - [详细技术设计](technical-design.md)：存储选型对比、DDD 分层、并发模型、事务与认领协议、一致性边界、事件与日志、API 错误码、LLM 适配。
-- [开发计划](../plan/development-plan.md)：阶段排期、验收清单、演示顺序。
+- [任务文档](../plan/tasks/T01-bootstrap.md)：T01～T14 逐任务开发（顺序、预算、依赖、TDD 步骤与完成勾选，同目录）。
 - 题目原文：根目录《后端实习生笔试项目：「录音转写服务」API.md》。
