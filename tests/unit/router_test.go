@@ -1,4 +1,4 @@
-package httpapi_test
+package unit
 
 import (
 	"encoding/json"

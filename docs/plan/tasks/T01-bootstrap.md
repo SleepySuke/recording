@@ -18,7 +18,7 @@
 - Create：`internal/interfaces/http/middleware/requestid.go`、`accesslog.go`、`errorrender.go`、`panicrecovery.go`
 - Create：`internal/infrastructure/logging/logging.go`（slog 初始化 + 文件轮转）
 - Create：`.env.example`、`compose.yaml`（本任务只含 db 服务 + healthcheck，app 服务 T12 再加）
-- Test：`internal/application/errorcode/errorcode_test.go`、`internal/interfaces/http/router_test.go`
+- Test：`tests/unit/errorcode_test.go`、`tests/unit/router_test.go`（2026-09-09 约定调整：测试统一放 `tests/` 目录——unit / integration 分层，不与实现代码同目录；实现只暴露可测的导出 API）
 
 ## 交付接口（后续任务依赖）
 

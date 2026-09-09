@@ -1,40 +1,44 @@
-package errorcode
+package unit
 
-import "testing"
+import (
+	"testing"
+
+	"recording-transcription/internal/application/errorcode"
+)
 
 // TestUT08_ErrorCodeRegistry —— 测试依据：测试设计 UT-08；设计依据：详设 §8.2～§8.3。
 // 断言：编号全局唯一；同步码的 HTTPStatus 与 §8.3 表逐项相等；String/Message 非空；
 // 异步码（40001/50001/50002/50003/30003）不映射 HTTP 状态（返回 0）。
 func TestUT08_ErrorCodeRegistry(t *testing.T) {
 	httpMapping := []struct {
-		code ErrorCode
+		code errorcode.ErrorCode
 		want int // §8.3 表中的 HTTP 状态码
 	}{
-		{CodeInvalidArgument, 400},
-		{CodeRouteNotFound, 404},
-		{CodeMethodNotAllowed, 405},
-		{CodeFileRequired, 400},
-		{CodeEmptyFile, 400},
-		{CodeUnsupportedExtension, 400},
-		{CodeFileTooLarge, 413},
-		{CodeRecordingNotFound, 404},
-		{CodeRecordingDeletePending, 503},
-		{CodeTaskNotFound, 404},
-		{CodeTaskNotRetryable, 409},
-		{CodeDatabaseUnavailable, 503},
-		{CodeFileStorageUnavailable, 503},
-		{CodeInternalError, 500},
-		{CodeDataInconsistent, 500},
+		{errorcode.CodeInvalidArgument, 400},
+		{errorcode.CodeRouteNotFound, 404},
+		{errorcode.CodeMethodNotAllowed, 405},
+		{errorcode.CodeFileRequired, 400},
+		{errorcode.CodeEmptyFile, 400},
+		{errorcode.CodeUnsupportedExtension, 400},
+		{errorcode.CodeFileTooLarge, 413},
+		{errorcode.CodeRecordingNotFound, 404},
+		{errorcode.CodeRecordingDeletePending, 503},
+		{errorcode.CodeTaskNotFound, 404},
+		{errorcode.CodeTaskNotRetryable, 409},
+		{errorcode.CodeDatabaseUnavailable, 503},
+		{errorcode.CodeFileStorageUnavailable, 503},
+		{errorcode.CodeInternalError, 500},
+		{errorcode.CodeDataInconsistent, 500},
 	}
-	asyncCodes := []ErrorCode{
-		CodeASRFailed,
-		CodeLLMTimeout,
-		CodeLLMUpstreamError,
-		CodeLLMInvalidOutput,
-		CodeServiceInterrupted,
+	asyncCodes := []errorcode.ErrorCode{
+		errorcode.CodeASRFailed,
+		errorcode.CodeLLMTimeout,
+		errorcode.CodeLLMUpstreamError,
+		errorcode.CodeLLMInvalidOutput,
+		errorcode.CodeServiceInterrupted,
 	}
 
-	seen := map[ErrorCode]bool{}
+	seen := map[errorcode.ErrorCode]bool{}
 	for _, tc := range httpMapping {
 		checkCode(t, seen, tc.code)
 		if got := tc.code.HTTPStatus(); got != tc.want {
@@ -48,12 +52,12 @@ func TestUT08_ErrorCodeRegistry(t *testing.T) {
 		}
 	}
 
-	if got := len(All()); got != len(httpMapping)+len(asyncCodes) {
+	if got := len(errorcode.All()); got != len(httpMapping)+len(asyncCodes) {
 		t.Errorf("All() 返回 %d 个码，want %d（注册表与常量集不一致）", got, len(httpMapping)+len(asyncCodes))
 	}
 }
 
-func checkCode(t *testing.T, seen map[ErrorCode]bool, c ErrorCode) {
+func checkCode(t *testing.T, seen map[errorcode.ErrorCode]bool, c errorcode.ErrorCode) {
 	t.Helper()
 	if seen[c] {
 		t.Errorf("编号 %d 重复注册", c)
