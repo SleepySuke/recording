@@ -5,6 +5,13 @@
 logs/
 data/
 e2e/actual/
+e2e/diff/
+
+# go 构建产物
+*.exe
+*.test
+*.out
+/bin/
 
 # 系统
 .DS_Store

@@ -1,0 +1,22 @@
+# T01 阶段仅含 db 依赖服务；app 服务在 T12 补齐（架构 §6 部署拓扑）。
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-recording}
+      MYSQL_USER: ${MYSQL_USER:-recording}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 设置}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  mysql-data:
