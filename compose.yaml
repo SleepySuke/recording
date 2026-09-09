@@ -1,14 +1,22 @@
 # T01 阶段仅含 db 依赖服务；app 服务在 T12 补齐（架构 §6 部署拓扑）。
+# 本机已有共享 MySQL 实例（dataforge-mysql，宿主 3306）时，日常开发可不起本服务：
+# DSN 直连共享实例并自建 recording / recording_test 库（见 .env.example 方式 A）。
+# 本服务用于仓库自包含交付（T12）：clone 后 compose up 即有独立 MySQL，不依赖外部实例。
 services:
   db:
-    image: mysql:8.4
+    # 复用本机已有 mysql:8.0 镜像，避免重复拉取（2026-09-09 本机决策）；
+    # 文档选型为 MySQL 8.4（详设 §1.3），本项目用到的能力
+    # （FOR UPDATE SKIP LOCKED、JSON、DATETIME(6)、DESC 索引、8.0.16+ CHECK）8.0 均支持。
+    image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-recording}
       MYSQL_USER: ${MYSQL_USER:-recording}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 设置}
     ports:
-      - "3306:3306"
+      # 容器内恒为 3306；宿主端口默认 3306，在 .env 用 MYSQL_PORT 覆盖
+      #（本机共享实例 dataforge-mysql 已占宿主 3306，本机起自带 db 时设 3307）。
+      - "${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
