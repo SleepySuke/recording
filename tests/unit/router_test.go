@@ -19,7 +19,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return httpapi.New(logger)
+	return httpapi.New(logger, nil)
 }
 
 type errorBody struct {

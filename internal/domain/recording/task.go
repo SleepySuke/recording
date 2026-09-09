@@ -31,19 +31,20 @@ var transitions = map[TaskStatus]map[TaskStatus]bool{
 
 // ProcessingTask 聚合内实体（详设 §2.1）：负责转写、摘要状态与执行轮次；重试复用任务 ID、递增 attempt。
 type ProcessingTask struct {
-	ID           string
-	RecordingID  string
-	Status       TaskStatus
-	Attempt      int
-	EventSeq     int64
-	Transcript   string
-	Summary      *Summary
-	ErrorCode    *int
-	ErrorMessage string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
+	ID               string
+	RecordingID      string
+	Status           TaskStatus
+	Attempt          int
+	EventSeq         int64
+	Transcript       string
+	Summary          *Summary
+	ErrorCode        *int
+	ErrorMessage     string
+	CreatedRequestID string // 最初上传请求关联（详设 §7.1，tasks.created_request_id）
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	StartedAt        *time.Time
+	FinishedAt       *time.Time
 }
 
 // CanTransition 报告当前状态到 to 是否为 §4.1 矩阵中的合法出边（done 无出边，矩阵外全部拒绝）。

@@ -148,6 +148,10 @@ make start    # 自检环境后一键启动（复用已有镜像）并等待就�
 | LOG_LEVEL | 运行日志级别 | INFO；生命周期事件不因调高级别被丢弃 |
 | LOG_MAX_SIZE_MB / LOG_MAX_BACKUPS / LOG_MAX_AGE_DAYS | 文件轮转 | 20 / 5 / 7 |
 | DATA_DIR | 应用内录音目录 | /data/recordings，挂载录音卷 |
+| UPLOAD_MAX_FILE_MB | 单文件上限（流式计数，不信任 Content-Length） | 50（= 50×1024×1024 字节） |
+| UPLOAD_MAX_BODY_MB | 请求体总上限（预留 multipart 开销） | 53 |
+| UPLOAD_MIN_FREE_DISK_MB | 数据目录磁盘预检阈值，不足拒绝上传 | 512 |
+| UPLOAD_READ_TIMEOUT / UPLOAD_TOTAL_TIMEOUT | 上传读空闲 / 总超时（分开配置） | 30s / 10m |
 | WORKER_CONCURRENCY | 最大同时执行数 | 3 |
 | TASK_POLL_INTERVAL | 待处理任务轮询 | 1s |
 | LLM_BASE_URL / LLM_MODEL | 真实摘要渠道 | 按所选供应商配置 |

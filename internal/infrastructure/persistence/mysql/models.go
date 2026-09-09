@@ -28,7 +28,7 @@ type TaskPO struct {
 	Attempt          int        `gorm:"column:attempt"`
 	EventSeq         int64      `gorm:"column:event_seq"`
 	Transcript       string     `gorm:"column:transcript;type:mediumtext"`
-	SummaryJSON      string     `gorm:"column:summary_json;type:json"`
+	SummaryJSON      *string    `gorm:"column:summary_json;type:json"` // 可空 JSON 列：空串不是合法 JSON，未完成时存 NULL
 	ErrorCode        *int       `gorm:"column:error_code"`
 	ErrorMessage     string     `gorm:"column:error_message;type:text"`
 	CreatedRequestID string     `gorm:"column:created_request_id;size:64"`

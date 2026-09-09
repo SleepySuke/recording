@@ -7,11 +7,13 @@ import (
 	"github.com/gin-gonic/gin"
 
 	appcode "recording-transcription/internal/application/errorcode"
+	"recording-transcription/internal/interfaces/http/handler"
 	"recording-transcription/internal/interfaces/http/middleware"
 )
 
-// New 构建 Gin 引擎并注册健康接口。业务路由随任务 T04～T09 逐步挂载。
-func New(logger *slog.Logger) *gin.Engine {
+// New 构建 Gin 引擎并注册健康接口。upload 非 nil 时挂载 POST /v1/recordings（T04）；
+// 其余业务路由随任务 T05～T09 逐步挂载。
+func New(logger *slog.Logger, upload *handler.UploadHandler) *gin.Engine {
 	r := gin.New()
 	r.Use(
 		middleware.RequestID(),
@@ -34,5 +36,8 @@ func New(logger *slog.Logger) *gin.Engine {
 		// T11 接入真实就绪门控（启动恢复完成后才就绪）
 		c.JSON(200, gin.H{"status": "ready"})
 	})
+	if upload != nil {
+		r.POST("/v1/recordings", upload.Handle)
+	}
 	return r
 }
