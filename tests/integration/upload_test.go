@@ -65,7 +65,7 @@ func newUploadEnv(t *testing.T) (*gin.Engine, *gorm.DB, string, string) {
 	if err != nil {
 		t.Fatalf("初始化测试数据目录失败: %v", err)
 	}
-	svc := apprec.NewUploadService(store, mysql.NewRecordingTx(db), nil, logger, itInstanceID)
+	svc := apprec.NewUploadService(store, mysql.NewRecordingTx(db, itInstanceID, logger), nil, logger, itInstanceID)
 	h := handler.NewUploadHandler(svc, logger, handler.UploadLimits{
 		MaxBodyBytes:    itMaxBodyBytes,
 		ReadIdleTimeout: 10 * time.Second,
@@ -73,7 +73,7 @@ func newUploadEnv(t *testing.T) (*gin.Engine, *gorm.DB, string, string) {
 	})
 	// T05 起查询接口与上传共用同一引擎与测试库（只读，不影响上传断言）。
 	queryHandler := handler.NewQueryHandler(apprec.NewQueryService(mysql.NewRecordingQuery(db), logger), logger)
-	return httpapi.New(logger, h, queryHandler), db, dataDir, logDir
+	return httpapi.New(logger, h, queryHandler, nil), db, dataDir, logDir
 }
 
 type formPart struct {

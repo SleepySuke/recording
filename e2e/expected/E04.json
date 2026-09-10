@@ -1,0 +1,27 @@
+{
+  "upload": {
+    "http_status": 202,
+    "recording_id": "<recording_id>",
+    "task_id": "<task_id>",
+    "status": "pending"
+  },
+  "retry_on_done": {
+    "http_status": 409,
+    "error": {
+      "code": 30002,
+      "message": "仅失败任务允许重试"
+    }
+  },
+  "retry_on_missing": {
+    "http_status": 404,
+    "error": {
+      "code": 30001,
+      "message": "任务不存在"
+    }
+  },
+  "table_counts": {
+    "recordings": 1,
+    "task_events": 4,
+    "tasks": 1
+  }
+}

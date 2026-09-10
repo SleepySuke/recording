@@ -78,6 +78,52 @@ func TestLoadConfigUploadGuards(t *testing.T) {
 	}
 }
 
+// TestLoadConfigMockASRFailFirst：MOCK_ASR_FAIL_FIRST 注入点（T08 / 测试设计 §2，
+// E2E-02「转写失败→手动重试」的生产可注入形态）：未设置 → false（默认关闭）；
+// ParseBool 合法值（true/1/false/0）原样生效；非法值 → malformed 报错可定位变量名。
+func TestLoadConfigMockASRFailFirst(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string // MOCK_ASR_FAIL_FIRST 值
+		notSet  bool
+		want    bool
+		wantErr string
+	}{
+		{name: "未设置为关闭", notSet: true, want: false},
+		{name: "true开启", env: "true", want: true},
+		{name: "1开启", env: "1", want: true},
+		{name: "false关闭", env: "false", want: false},
+		{name: "0关闭", env: "0", want: false},
+		{name: "非法值报错", env: "yes-please", wantErr: "MOCK_ASR_FAIL_FIRST"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequiredEnv(t)
+			if tc.notSet {
+				t.Setenv("MOCK_ASR_FAIL_FIRST", "")
+			} else {
+				t.Setenv("MOCK_ASR_FAIL_FIRST", tc.env)
+			}
+			cfg, err := bootstrap.LoadConfig()
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("非法 MOCK_ASR_FAIL_FIRST=%q 应启动即失败", tc.env)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("报错 %q 未包含 %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("合法配置不应报错: %v", err)
+			}
+			if cfg.MockASRFailFirst != tc.want {
+				t.Errorf("MockASRFailFirst = %v, want %v", cfg.MockASRFailFirst, tc.want)
+			}
+		})
+	}
+}
+
 // TestLoadConfigMockASRDelay：MockASRDelay 注入点（T06E / 测试设计 §2「Mock ASR 按种子注入」
 // 的生产可注入形态）：未设置 → -1（生产 Mock）；合法时长 → 原值（确定性替身延迟）；
 // 显式负值 → malformed 报错（与其他数值变量同样列出问题，不静默回退）。

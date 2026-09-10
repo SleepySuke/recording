@@ -80,7 +80,7 @@ type e01Actual struct {
 
 // TestE2E01_MainPath：100ms 确定性转写延迟（给轮询机会观察到 transcribing，不强制）。
 func TestE2E01_MainPath(t *testing.T) {
-	h := newE2E(t, 100*time.Millisecond)
+	h := newE2E(t, e2eOpts{MockASRDelay: 100 * time.Millisecond})
 
 	content := contentOf(8 * 1024)
 	resp, upCode, err := h.postUpload("e2e01-meeting.wav", content)

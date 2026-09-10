@@ -39,6 +39,11 @@ func (s *stubRecordingTx) CreateWithTask(context.Context, ports.CreateInput) err
 	return s.err
 }
 
+// RetryTask 满足 T08 起扩展的端口面（本文件只测上传链，不会被调用）。
+func (s *stubRecordingTx) RetryTask(context.Context, string) (int, error) {
+	return 0, nil
+}
+
 // newUploadEnvSvc 组装被测服务：真实本地存储 + 桩事务 + 丢弃日志。
 func newUploadEnvSvc(t *testing.T, minFreeBytes uint64, tx *stubRecordingTx) (*recording.UploadService, string) {
 	t.Helper()

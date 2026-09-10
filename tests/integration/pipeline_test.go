@@ -46,10 +46,15 @@ type PipelineHarness struct {
 }
 
 // NewPipelineHarness 组装并启动 3 worker 池（20ms 快轮询加速测试，唤醒语义与生产一致）；
-// 转写用确定性替身（0 延迟、不失败，测试设计 §2「不等待、不碰运气」）。
+// 转写用确定性替身（0 延迟、不失败，测试设计 §2「不等待、不碰运气」），可用
+// WithFailFirstASR() 切换为「每个 task_id 首次失败」（T08 重试用例）。
 // 生命周期挂 t.Cleanup：关闭 FakeLLM、取消 runCtx 并 Stop 等待 worker 退出。
-func NewPipelineHarness(t *testing.T) *PipelineHarness {
+func NewPipelineHarness(t *testing.T, opts ...PipelineOpt) *PipelineHarness {
 	t.Helper()
+	var conf pipelineConf
+	for _, o := range opts {
+		o(&conf)
+	}
 	gin.SetMode(gin.TestMode)
 	db := RequireTestDB(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -68,7 +73,7 @@ func NewPipelineHarness(t *testing.T) *PipelineHarness {
 
 	procTx := mysql.NewProcessingTx(db, itInstanceID, logger)
 	query := mysql.NewRecordingQuery(db)
-	transcriber := &mock.DeterministicTranscriber{}
+	transcriber := &mock.DeterministicTranscriber{FailFirst: conf.failFirstASR}
 	processSvc := processing.NewProcessService(procTx, query, transcriber, summarizer, worker.NewCancelTable(), logger)
 	pool := worker.NewPool(3, 20*time.Millisecond, processSvc.Process)
 	runCtx, cancelRun := context.WithCancel(context.Background())
@@ -78,20 +83,37 @@ func NewPipelineHarness(t *testing.T) *PipelineHarness {
 		pool.Stop()
 	})
 
-	uploadSvc := apprec.NewUploadService(store, mysql.NewRecordingTx(db), pool, logger, itInstanceID)
+	recordingTx := mysql.NewRecordingTx(db, itInstanceID, logger)
+	uploadSvc := apprec.NewUploadService(store, recordingTx, pool, logger, itInstanceID)
 	uploadHandler := handler.NewUploadHandler(uploadSvc, logger, handler.UploadLimits{
 		MaxBodyBytes:    itMaxBodyBytes,
 		ReadIdleTimeout: 10 * time.Second,
 		TotalTimeout:    time.Minute,
 	})
 	queryHandler := handler.NewQueryHandler(apprec.NewQueryService(query, logger), logger)
+	// T08 起挂载重试接口（详设 §8.1），与生产装配同构。
+	retryHandler := handler.NewRetryHandler(apprec.NewRetryService(recordingTx, pool, logger), logger)
 	return &PipelineHarness{
 		DB:      db,
-		Router:  httpapi.New(logger, uploadHandler, queryHandler),
+		Router:  httpapi.New(logger, uploadHandler, queryHandler, retryHandler),
 		Pool:    pool,
 		DataDir: dataDir,
 		Fake:    fake,
 	}
+}
+
+// pipelineConf / PipelineOpt 装配选项（T08 起按用例注入替身形态）。
+type pipelineConf struct {
+	failFirstASR bool
+}
+
+// PipelineOpt 流水线测试装配选项。
+type PipelineOpt func(*pipelineConf)
+
+// WithFailFirstASR 确定性转写替身切换为「每个 task_id 首次失败、此后成功」
+// （详设 §4.5：首轮 failed → 手动 retry → 新一轮成功）。
+func WithFailFirstASR() PipelineOpt {
+	return func(c *pipelineConf) { c.failFirstASR = true }
 }
 
 // newClaimEnv 只测认领协议（不起 worker 池）：真实 MySQL + ProcessingTx 适配器。

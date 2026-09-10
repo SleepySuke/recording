@@ -28,6 +28,7 @@ type Config struct {
 	WorkerConcurrency  int
 	TaskPollInterval   time.Duration
 	MockASRDelay       time.Duration // -1（默认）= 生产 Mock；≥0 = 确定性替身固定延迟（测试设计 §2）
+	MockASRFailFirst   bool          // MOCK_ASR_FAIL_FIRST：确定性替身每个 task_id 首次转写失败（详设 §4.5 重试用例，E2E-02）
 	LLMBaseURL         string
 	LLMModel           string
 	LLMAPIKey          string
@@ -61,6 +62,15 @@ func LoadConfig() (*Config, error) {
 		}
 		return def
 	}
+	envBool := func(key string, def bool) bool {
+		if v := os.Getenv(key); v != "" {
+			if b, err := strconv.ParseBool(v); err == nil {
+				return b
+			}
+			malformed = append(malformed, fmt.Errorf("环境变量 %s=%q 不是合法布尔值（true/false）", key, v))
+		}
+		return def
+	}
 
 	uploadFileMB := envInt("UPLOAD_MAX_FILE_MB", 50)
 	uploadBodyMB := envInt("UPLOAD_MAX_BODY_MB", 53)
@@ -83,6 +93,7 @@ func LoadConfig() (*Config, error) {
 		WorkerConcurrency:  envInt("WORKER_CONCURRENCY", 3),
 		TaskPollInterval:   envDuration("TASK_POLL_INTERVAL", time.Second),
 		MockASRDelay:       envMockASRDelay(&malformed),
+		MockASRFailFirst:   envBool("MOCK_ASR_FAIL_FIRST", false),
 		LLMBaseURL:         os.Getenv("LLM_BASE_URL"),
 		LLMModel:           os.Getenv("LLM_MODEL"),
 		LLMAPIKey:          os.Getenv("LLM_API_KEY"),

@@ -35,7 +35,7 @@ type e07Actual struct {
 // TestE2E07_Concurrency：MockASRDelay=50ms——转写真实占用 worker 槽位（3 并发上限
 // 下 5 任务必然排队两轮），但总量可控（5×50ms ≈ 250ms，期限 15s 富余）。
 func TestE2E07_Concurrency(t *testing.T) {
-	h := newE2E(t, 50*time.Millisecond)
+	h := newE2E(t, e2eOpts{MockASRDelay: 50 * time.Millisecond})
 
 	// 并发 5 个上传：每个 goroutine 独立构造 multipart 请求体（postUpload 内部
 	// 每次 new buffer/writer，无共享 writer）；采集留回主 goroutine。

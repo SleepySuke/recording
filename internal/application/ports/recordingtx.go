@@ -25,4 +25,13 @@ type RecordingTx interface {
 	// CreateWithTask 事务①：INSERT recordings + tasks(pending) + task_created 事件，
 	// 任一失败整体回滚。提交结果未知时返回包装 ErrCommitUnknown 的错误。
 	CreateWithTask(ctx context.Context, in CreateInput) error
+
+	// RetryTask 重试事务（详设 §4.5，架构 §3）：锁 tasks→recordings 行 →
+	// 锁内复查 status=failed 且未删除 → 条件更新 attempt+1 回 pending、清空上轮
+	// 产物与错误 → 同事务 task_retry_accepted 事件 → 回读并返回新轮次号。
+	// 任务不存在或录音删除中 → *errorcode.AppError{CodeTaskNotFound}（HTTP 404/30001）；
+	// 复查非 failed → *errorcode.AppError{CodeTaskNotRetryable}（HTTP 409/30002）；
+	// 行锁串行化并发 retry，同轮重复请求恰好一个成功；提交结果未知返回包装
+	// ErrCommitUnknown 的错误。
+	RetryTask(ctx context.Context, taskID string) (attempt int, err error)
 }

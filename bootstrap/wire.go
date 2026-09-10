@@ -51,11 +51,13 @@ func NewServer(cfg *Config) (*http.Server, *slog.Logger, func(), error) {
 	instanceID := uuid.New()
 	query := mysql.NewRecordingQuery(db)
 	processingTx := mysql.NewProcessingTx(db, instanceID, logger)
+	recordingTx := mysql.NewRecordingTx(db, instanceID, logger)
 	// MockASRDelay（测试设计 §2）：-1 = 生产 Mock（5～15s 种子延迟 + 种子失败）；
-	// ≥0 = 确定性替身（恒成功、固定延迟），供 E2E/本地演练注入。
+	// ≥0 = 确定性替身（固定延迟），供 E2E/本地演练注入；MOCK_ASR_FAIL_FIRST
+	// 叠加「每个 task_id 首次转写失败」（详设 §4.5 重试用例，E2E-02）。
 	transcriber := ports.Transcriber(mock.New())
 	if cfg.MockASRDelay >= 0 {
-		transcriber = &mock.DeterministicTranscriber{Delay: cfg.MockASRDelay}
+		transcriber = &mock.DeterministicTranscriber{Delay: cfg.MockASRDelay, FailFirst: cfg.MockASRFailFirst}
 	}
 	// 摘要适配器（详设 §9）：OpenAI 兼容渠道（T01 渠道记录：小米 MiMo）；
 	// 超时/响应体上限内建于适配器，llmCtx 在其内部自 taskCtx 派生（§3.4）。
@@ -72,17 +74,19 @@ func NewServer(cfg *Config) (*http.Server, *slog.Logger, func(), error) {
 		pool.Stop()
 	}
 
-	uploadSvc := apprec.NewUploadService(fileStore, mysql.NewRecordingTx(db), pool, logger, instanceID)
+	uploadSvc := apprec.NewUploadService(fileStore, recordingTx, pool, logger, instanceID)
 	uploadHandler := handler.NewUploadHandler(uploadSvc, logger, handler.UploadLimits{
 		MaxBodyBytes:    cfg.UploadMaxBodyBytes,
 		ReadIdleTimeout: cfg.UploadReadTimeout,
 		TotalTimeout:    cfg.UploadTotalTimeout,
 	})
 	queryHandler := handler.NewQueryHandler(apprec.NewQueryService(query, logger), logger)
+	// 重试链（详设 §4.5）：RetryService 复用 recordingTx，COMMIT 后经 pool Notify 唤醒。
+	retryHandler := handler.NewRetryHandler(apprec.NewRetryService(recordingTx, pool, logger), logger)
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
-		Handler: httpapi.New(logger, uploadHandler, queryHandler),
+		Handler: httpapi.New(logger, uploadHandler, queryHandler, retryHandler),
 	}
 	return srv, logger, shutdown, nil
 }

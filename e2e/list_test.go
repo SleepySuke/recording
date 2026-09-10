@@ -53,7 +53,7 @@ type e08Actual struct {
 
 // TestE2E08_List：2 真实上传（至 done，T07 起流水线终点）+ 6 条 pending 种子 + 1 条 deleting 种子。
 func TestE2E08_List(t *testing.T) {
-	h := newE2E(t, 0) // 0 延迟确定性替身：两个上传最快到达 done
+	h := newE2E(t, e2eOpts{MockASRDelay: 0}) // 0 延迟确定性替身：两个上传最快到达 done
 
 	// 真实上传 2 个至 done（顺序上传，created_at 严格递增：upload-1 早于 upload-2）。
 	a := e08Actual{}

@@ -46,14 +46,24 @@ type e2eHarness struct {
 	shutdown func() // NewServer 返回的停池函数（幂等）
 }
 
-// newE2E 装配并启动一台真实服务。mockDelay 透传 Config.MockASRDelay
-// （≥0 = 确定性替身固定延迟；-1 = 生产 Mock，E2E 不使用——不等待 5～15s、不碰运气）。
-func newE2E(t *testing.T, mockDelay time.Duration) *e2eHarness {
+// e2eOpts 装配选项（按用例注入替身形态，测试设计 §2；T08 起随用例增长）。
+type e2eOpts struct {
+	MockASRDelay     time.Duration // ≥0 = 确定性替身固定延迟（E2E 均用；-1 生产 Mock 不使用）
+	MockASRFailFirst bool          // 确定性替身每个 task_id 首次转写失败（E2E-02，详设 §4.5）
+	LLMTimeout       time.Duration // 0 = 默认 10s；E2E-03 缩短以快速触发 50001
+}
+
+// newE2E 装配并启动一台真实服务。opts 逐项透传 Config（对应 MOCK_ASR_* / LLM_TIMEOUT）。
+func newE2E(t *testing.T, opts e2eOpts) *e2eHarness {
 	t.Helper()
 	gin.SetMode(gin.TestMode) // 只关路由注册噪音，不影响真实 HTTP 行为
 	db := requireTestDB(t)
 	dataDir := t.TempDir()
 	logDir := t.TempDir()
+	llmTimeout := opts.LLMTimeout
+	if llmTimeout <= 0 {
+		llmTimeout = 10 * time.Second
+	}
 
 	// 摘要段（T07）：真实 LLM 适配器指向进程内 FakeLLM（默认 normal 正常应答），
 	// 服务经 cfg.LLM* 三项与其相连——摘要链路走真实 HTTP，只替身渠道本身。
@@ -77,12 +87,13 @@ func newE2E(t *testing.T, mockDelay time.Duration) *e2eHarness {
 		UploadTotalTimeout: time.Minute,
 		WorkerConcurrency:  e2eWorkers,
 		TaskPollInterval:   e2ePollInterval,
-		MockASRDelay:       mockDelay,
+		MockASRDelay:       opts.MockASRDelay,
+		MockASRFailFirst:   opts.MockASRFailFirst,
 		// LLM 指向进程内 FakeLLM（真实适配器走真实 HTTP 外呼）。
 		LLMBaseURL:      fakeSrv.URL,
 		LLMModel:        "fake-model",
 		LLMAPIKey:       "fake-key",
-		LLMTimeout:      10 * time.Second,
+		LLMTimeout:      llmTimeout,
 		DBQueryTimeout:  3 * time.Second,
 		ShutdownTimeout: 20 * time.Second,
 		CleanupInterval: 30 * time.Second,
@@ -138,6 +149,25 @@ func (h *e2eHarness) doGet(path string) (int, []byte) {
 	return resp.StatusCode, body
 }
 
+// doRetry 真实 HTTP POST /v1/tasks/:id/retry（详设 §8.1），返回状态码与响应体原文。
+func (h *e2eHarness) doRetry(taskID string) (int, []byte) {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, h.BaseURL+"/v1/tasks/"+taskID+"/retry", nil)
+	if err != nil {
+		h.t.Fatalf("构造 retry 请求失败: %v", err)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		h.t.Fatalf("POST retry 失败: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Fatalf("读取 retry 响应体失败: %v", err)
+	}
+	return resp.StatusCode, body
+}
+
 // uploadResp 上传 202 响应体（与 handler 实际返回一致）。
 type uploadResp struct {
 	RecordingID string `json:"recording_id"`
@@ -183,7 +213,9 @@ func (h *e2eHarness) postUpload(filename string, content []byte) (uploadResp, in
 }
 
 // 状态推进序（用于轮询不回退检查；unknown 必然是异常值）。
-var statusRank = map[string]int{"pending": 0, "transcribing": 1, "summarizing": 2, "done": 3}
+// failed 排在 done 之后（T08 起 E2E-02/03 轮询到 failed）：单次 pollTask 会话内
+// 单调即可；重试后新一轮从 pending 重新起步，跨轮比较无意义（每次调用独立序列）。
+var statusRank = map[string]int{"pending": 0, "transcribing": 1, "summarizing": 2, "done": 3, "failed": 4}
 
 // taskBody GET /v1/tasks/:id 响应体（与 handler 实际返回一致）。
 type taskBody struct {
