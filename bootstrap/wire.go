@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"recording-transcription/internal/application/ports"
 	"recording-transcription/internal/application/processing"
 	apprec "recording-transcription/internal/application/recording"
 	"recording-transcription/internal/infrastructure/asr/mock"
@@ -49,7 +50,13 @@ func NewServer(cfg *Config) (*http.Server, *slog.Logger, func(), error) {
 	instanceID := uuid.New()
 	query := mysql.NewRecordingQuery(db)
 	processingTx := mysql.NewProcessingTx(db, instanceID, logger)
-	processSvc := processing.NewProcessService(processingTx, query, mock.New(), worker.NewCancelTable(), logger)
+	// MockASRDelay（测试设计 §2）：-1 = 生产 Mock（5～15s 种子延迟 + 种子失败）；
+	// ≥0 = 确定性替身（恒成功、固定延迟），供 E2E/本地演练注入。
+	transcriber := ports.Transcriber(mock.New())
+	if cfg.MockASRDelay >= 0 {
+		transcriber = &mock.DeterministicTranscriber{Delay: cfg.MockASRDelay}
+	}
+	processSvc := processing.NewProcessService(processingTx, query, transcriber, worker.NewCancelTable(), logger)
 	pool := worker.NewPool(cfg.WorkerConcurrency, cfg.TaskPollInterval, processSvc.Process)
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	pool.Start(runCtx)

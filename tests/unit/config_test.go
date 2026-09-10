@@ -3,6 +3,7 @@ package unit
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"recording-transcription/bootstrap"
 )
@@ -72,6 +73,51 @@ func TestLoadConfigUploadGuards(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("报错 %q 未包含 %q（应可定位到环境变量名）", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoadConfigMockASRDelay：MockASRDelay 注入点（T06E / 测试设计 §2「Mock ASR 按种子注入」
+// 的生产可注入形态）：未设置 → -1（生产 Mock）；合法时长 → 原值（确定性替身延迟）；
+// 显式负值 → malformed 报错（与其他数值变量同样列出问题，不静默回退）。
+func TestLoadConfigMockASRDelay(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string // MOCK_ASR_DELAY 值；envNotSet 标记未设置
+		notSet  bool
+		want    time.Duration // 期望值（wantErr 非空时忽略）
+		wantErr string
+	}{
+		{name: "未设置为负一", notSet: true, want: -1},
+		{name: "合法时长150ms", env: "150ms", want: 150 * time.Millisecond},
+		{name: "零毫秒合法", env: "0s", want: 0},
+		{name: "显式负值报错", env: "-3s", wantErr: "MOCK_ASR_DELAY"},
+		{name: "非法格式报错", env: "soon", wantErr: "MOCK_ASR_DELAY"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequiredEnv(t)
+			if tc.notSet {
+				t.Setenv("MOCK_ASR_DELAY", "")
+			} else {
+				t.Setenv("MOCK_ASR_DELAY", tc.env)
+			}
+			cfg, err := bootstrap.LoadConfig()
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("非法 MOCK_ASR_DELAY=%q 应启动即失败", tc.env)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("报错 %q 未包含 %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("合法配置不应报错: %v", err)
+			}
+			if cfg.MockASRDelay != tc.want {
+				t.Errorf("MockASRDelay = %v, want %v", cfg.MockASRDelay, tc.want)
 			}
 		})
 	}

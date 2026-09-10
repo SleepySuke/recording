@@ -1,0 +1,65 @@
+{
+  "upload": {
+    "http_status": 202,
+    "recording_id": "<recording_id>",
+    "task_id": "<task_id>",
+    "status": "pending"
+  },
+  "recording_detail": {
+    "http_status": 200,
+    "id": "<recording_id>",
+    "original_filename": "e2e01-meeting.wav",
+    "extension": "wav",
+    "size_bytes": 8192,
+    "created_at": "<ts>",
+    "task": {
+      "id": "<task_id>",
+      "status": "summarizing",
+      "attempt": 1
+    },
+    "transcript": "[mock-asr] transcript for task <task_id> (seed=<seed>)"
+  },
+  "task_final": {
+    "status": "summarizing",
+    "attempt": 1,
+    "event_seq": 3,
+    "transcript": "[mock-asr] transcript for task <task_id> (seed=<seed>)"
+  },
+  "status_sequence": ["pending", "transcribing", "summarizing"],
+  "events": [
+    {
+      "event_seq": 1,
+      "event": "task_created",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": null,
+      "to_status": "pending"
+    },
+    {
+      "event_seq": 2,
+      "event": "task_claimed",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": "pending",
+      "to_status": "transcribing"
+    },
+    {
+      "event_seq": 3,
+      "event": "transcription_completed",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": "transcribing",
+      "to_status": "summarizing"
+    }
+  ],
+  "storage_file": {
+    "exists": true,
+    "size_bytes": 8192
+  },
+  "mirror_events": ["task_created", "task_claimed", "transcription_completed"],
+  "table_counts": {
+    "recordings": 1,
+    "task_events": 3,
+    "tasks": 1
+  }
+}

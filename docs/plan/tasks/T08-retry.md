@@ -42,6 +42,7 @@ RetryTask(ctx context.Context, taskID string) (attempt int, err error)
 - [ ] 3. 实现：RetryTask 事务（复用 T06/T07 的锁顺序与事件写入设施）、用例与 handler；COMMIT 后 `Notify()`。
 - [ ] 4. 运行确认通过：全绿。
 - [ ] 5. 提交：`feat: support manual retry for failed tasks`。
+- [ ] 6. E2E：补 E2E-02 / E2E-03 / E2E-04（`e2e/`，映射表见测试设计 §5.0）。
 
 ## 完成标准
 

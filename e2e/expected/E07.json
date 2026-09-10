@@ -1,0 +1,177 @@
+{
+  "uploads": {
+    "0": { "http_status": 202, "status": "pending" },
+    "1": { "http_status": 202, "status": "pending" },
+    "2": { "http_status": 202, "status": "pending" },
+    "3": { "http_status": 202, "status": "pending" },
+    "4": { "http_status": 202, "status": "pending" }
+  },
+  "tasks": {
+    "0": {
+      "status": "summarizing",
+      "attempt": 1,
+      "event_seq": 3,
+      "task_claimed_count": 1,
+      "events": [
+        {
+          "event_seq": 1,
+          "event": "task_created",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": null,
+          "to_status": "pending"
+        },
+        {
+          "event_seq": 2,
+          "event": "task_claimed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "pending",
+          "to_status": "transcribing"
+        },
+        {
+          "event_seq": 3,
+          "event": "transcription_completed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "transcribing",
+          "to_status": "summarizing"
+        }
+      ]
+    },
+    "1": {
+      "status": "summarizing",
+      "attempt": 1,
+      "event_seq": 3,
+      "task_claimed_count": 1,
+      "events": [
+        {
+          "event_seq": 1,
+          "event": "task_created",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": null,
+          "to_status": "pending"
+        },
+        {
+          "event_seq": 2,
+          "event": "task_claimed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "pending",
+          "to_status": "transcribing"
+        },
+        {
+          "event_seq": 3,
+          "event": "transcription_completed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "transcribing",
+          "to_status": "summarizing"
+        }
+      ]
+    },
+    "2": {
+      "status": "summarizing",
+      "attempt": 1,
+      "event_seq": 3,
+      "task_claimed_count": 1,
+      "events": [
+        {
+          "event_seq": 1,
+          "event": "task_created",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": null,
+          "to_status": "pending"
+        },
+        {
+          "event_seq": 2,
+          "event": "task_claimed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "pending",
+          "to_status": "transcribing"
+        },
+        {
+          "event_seq": 3,
+          "event": "transcription_completed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "transcribing",
+          "to_status": "summarizing"
+        }
+      ]
+    },
+    "3": {
+      "status": "summarizing",
+      "attempt": 1,
+      "event_seq": 3,
+      "task_claimed_count": 1,
+      "events": [
+        {
+          "event_seq": 1,
+          "event": "task_created",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": null,
+          "to_status": "pending"
+        },
+        {
+          "event_seq": 2,
+          "event": "task_claimed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "pending",
+          "to_status": "transcribing"
+        },
+        {
+          "event_seq": 3,
+          "event": "transcription_completed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "transcribing",
+          "to_status": "summarizing"
+        }
+      ]
+    },
+    "4": {
+      "status": "summarizing",
+      "attempt": 1,
+      "event_seq": 3,
+      "task_claimed_count": 1,
+      "events": [
+        {
+          "event_seq": 1,
+          "event": "task_created",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": null,
+          "to_status": "pending"
+        },
+        {
+          "event_seq": 2,
+          "event": "task_claimed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "pending",
+          "to_status": "transcribing"
+        },
+        {
+          "event_seq": 3,
+          "event": "transcription_completed",
+          "attempt": 1,
+          "error_code": null,
+          "from_status": "transcribing",
+          "to_status": "summarizing"
+        }
+      ]
+    }
+  },
+  "residual_pending_or_transcribing": 0,
+  "table_counts": {
+    "recordings": 5,
+    "task_events": 15,
+    "tasks": 5
+  }
+}

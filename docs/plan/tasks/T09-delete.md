@@ -50,6 +50,7 @@ func StartCleanup(runCtx context.Context, wg *sync.WaitGroup, interval time.Dura
   - 清理循环：扫描 deleting_at 非空 → 删文件 → Purge；失败记日志不阻塞；「启动优先恢复删除」属 T11。
 - [ ] 5. 运行确认通过：全绿（涉及取消表与清理循环的用例带 `-race`）。
 - [ ] 6. 提交：`feat: implement safe deletion with background cleanup`。
+- [ ] 7. E2E：补 E2E-05（`e2e/`，映射表见测试设计 §5.0）；E2E-08 与不变量巡检中 deleting 相关断言同步放宽。
 
 ## 完成标准
 

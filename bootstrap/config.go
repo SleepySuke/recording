@@ -27,6 +27,7 @@ type Config struct {
 	UploadTotalTimeout time.Duration // 整个上传的总超时
 	WorkerConcurrency  int
 	TaskPollInterval   time.Duration
+	MockASRDelay       time.Duration // -1（默认）= 生产 Mock；≥0 = 确定性替身固定延迟（测试设计 §2）
 	LLMBaseURL         string
 	LLMModel           string
 	LLMAPIKey          string
@@ -81,6 +82,7 @@ func LoadConfig() (*Config, error) {
 		UploadTotalTimeout: envDuration("UPLOAD_TOTAL_TIMEOUT", 10*time.Minute),
 		WorkerConcurrency:  envInt("WORKER_CONCURRENCY", 3),
 		TaskPollInterval:   envDuration("TASK_POLL_INTERVAL", time.Second),
+		MockASRDelay:       envMockASRDelay(&malformed),
 		LLMBaseURL:         os.Getenv("LLM_BASE_URL"),
 		LLMModel:           os.Getenv("LLM_MODEL"),
 		LLMAPIKey:          os.Getenv("LLM_API_KEY"),
@@ -137,4 +139,23 @@ func envDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envMockASRDelay 读 MOCK_ASR_DELAY（duration 格式）：未设置 → -1（生产 Mock）；
+// 设置且为负 → malformed（-1 保留给「未设置」，显式负值必是配置笔误，报错定位到变量名）。
+func envMockASRDelay(malformed *[]error) time.Duration {
+	v := os.Getenv("MOCK_ASR_DELAY")
+	if v == "" {
+		return -1
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		*malformed = append(*malformed, fmt.Errorf("环境变量 MOCK_ASR_DELAY=%q 不是合法时长（如 30s、150ms）", v))
+		return -1
+	}
+	if d < 0 {
+		*malformed = append(*malformed, fmt.Errorf("环境变量 MOCK_ASR_DELAY 不能为负数（未设置即用生产 Mock），当前 %q", v))
+		return -1
+	}
+	return d
 }

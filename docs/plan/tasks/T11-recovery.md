@@ -49,6 +49,7 @@ type Recoverer interface {
 - [ ] 5. 运行确认通过：全绿。
 - [ ] 6. 手动演练（E2E-06 前置）：上传 → 长延迟任务在 summarizing 时 `kill` 进程 → 重启 → 任务重做至 done、attempt=2、事件含 task_recovered。
 - [ ] 7. 提交：`feat: implement startup recovery and readiness gating`。
+- [ ] 8. E2E：补 E2E-06（`e2e/`，映射表见测试设计 §5.0）。
 
 ## 完成标准
 

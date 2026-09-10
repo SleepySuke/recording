@@ -57,6 +57,7 @@ FakeLLM（`internal/llm` 测试导出或 `tests` 内建，供 IT-14 与后续 E2
 - [ ] 5. 运行确认通过：全部命令全绿。
 - [ ] 6. 真实 LLM 冒烟（P0，不留到交付）：配置真实渠道跑一次完整上传 → done，保存脱敏的请求/响应摘要到本文件末尾记录。
 - [ ] 7. 提交：`feat: integrate llm summarization with atomic completion`。
+- [ ] 8. E2E：扩展 `e2e/` 的 E2E-01 验收终点 summarizing → done（事件链、详情 result 三字段），并注入 LLM 替身覆盖边界（映射表见测试设计 §5.0）。
 
 ## 完成标准
 
