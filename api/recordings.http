@@ -1,24 +1,27 @@
 ### 录音转写服务 · API 调试文件（六个接口全覆盖）
-### 导入方式：VS Code REST Client 直接可用（变量以 @ 定义）；
-### IntelliJ / GoLand HTTP Client 可用 {{base_url}} 前将变量加入环境或直接替换字面量。
-### 浏览器联调页（同源、无 CORS）：{{base_url}}/ui
-### 走读路径：上传 → 轮询任务至 done/failed → 详情看转写与摘要 → 列表 → 删除。
+### 使用方式：启动服务后，从「0. 就绪检查」按顺序点击每个请求的 Send Request。
+### VS Code REST Client 可直接运行；IntelliJ / GoLand HTTP Client 可用 {{base_url}}；
+### 上传响应中的两个 ID 按提示复制到下方变量。浏览器联调页：{{base_url}}/ui。
+### 当前 ASR 为 Mock：结构化摘要总结的是 [mock-asr] transcript，而不是音频中实际说话内容。
 
 @base_url = http://localhost:8080
-@recording_id = 在上传或列表响应中取得后填入
-@task_id = 在上传响应中取得后填入
+@recording_id = 在上传响应的 recording_id 字段复制后填入
+@task_id = 在上传响应的 task_id 字段复制后填入
 
-### 1. 上传音频（multipart 字段名 file；扩展名 wav/mp3/m4a/aac，≤50MiB）
+### 0. 就绪检查：200 / {"status":"ready"} 后才开始上传
+GET {{base_url}}/readyz
+
+### 1. 上传仓库内的中文测试录音（multipart 字段名 file；扩展名 wav/mp3/m4a/aac，≤50MiB）
 ### 202 → {"recording_id":"...","task_id":"...","status":"pending"}；非法扩展名/空文件 → 400
-### 注意：`< ./meeting.wav` 按 .http 文件所在目录解析——音频文件需与本文件同目录放置（或改为绝对路径）。
+### 测试文件为本目录的 llm-smoke-demo.wav。收到 202 后，将两个 ID 复制到文件顶部的变量。
 POST {{base_url}}/v1/recordings
 Content-Type: multipart/form-data; boundary=WebAppBoundary
 
 --WebAppBoundary
-Content-Disposition: form-data; name="file"; filename="meeting.wav"
+Content-Disposition: form-data; name="file"; filename="llm-smoke-demo.wav"
 Content-Type: audio/wav
 
-< ./meeting.wav
+< ./llm-smoke-demo.wav
 --WebAppBoundary--
 
 ### 2. 任务状态轮询（失败任务仍 200：status=failed + error.code，如 50001=LLM_TIMEOUT）
@@ -26,6 +29,7 @@ Content-Type: audio/wav
 GET {{base_url}}/v1/tasks/{{task_id}}
 
 ### 3. 录音详情（done 后 transcript 与 result.summary/key_points/todos 非 null）
+### 预期：transcript 以 [mock-asr] 开头；摘要不会对应测试 WAV 的中文内容，直到接入真实 ASR。
 GET {{base_url}}/v1/recordings/{{recording_id}}
 
 ### 4. 录音分页列表（page 默认 1、page_size 默认 20 最大 100；按创建时间倒序，软删除中不可见）

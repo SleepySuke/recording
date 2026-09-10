@@ -1,0 +1,57 @@
+{
+  "info": {
+    "name": "录音转写与智能摘要服务",
+    "description": "导入 Postman 后先发送 0. 就绪检查，再上传测试录音。将上传响应中的 recording_id 和 task_id 分别写入 Collection Variables，随后查询任务、详情、重试或删除。当前 ASR 为 Mock，摘要总结的是 mock transcript，不是 WAV 的实际语音内容。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "recording_id", "value": "" },
+    { "key": "task_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "0. 就绪检查",
+      "request": { "method": "GET", "url": "{{base_url}}/readyz" }
+    },
+    {
+      "name": "1. 上传中文测试录音",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            { "key": "file", "type": "file", "src": "api/llm-smoke-demo.wav" }
+          ]
+        },
+        "url": "{{base_url}}/v1/recordings",
+        "description": "如 Postman 未自动定位文件，请在 Body > form-data 的 file 行手工选择仓库内 api/llm-smoke-demo.wav。"
+      }
+    },
+    {
+      "name": "2. 查询任务",
+      "request": { "method": "GET", "url": "{{base_url}}/v1/tasks/{{task_id}}" }
+    },
+    {
+      "name": "3. 查询录音详情",
+      "request": { "method": "GET", "url": "{{base_url}}/v1/recordings/{{recording_id}}" }
+    },
+    {
+      "name": "4. 录音列表",
+      "request": { "method": "GET", "url": "{{base_url}}/v1/recordings?page=1&page_size=20" }
+    },
+    {
+      "name": "5. 重试失败任务",
+      "request": { "method": "POST", "url": "{{base_url}}/v1/tasks/{{task_id}}/retry" }
+    },
+    {
+      "name": "6. 删除录音",
+      "request": { "method": "DELETE", "url": "{{base_url}}/v1/recordings/{{recording_id}}" }
+    },
+    {
+      "name": "附. 健康检查",
+      "request": { "method": "GET", "url": "{{base_url}}/healthz" }
+    }
+  ]
+}

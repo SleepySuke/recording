@@ -26,6 +26,7 @@
 <body>
 <h1>录音转写服务 · 联调页</h1>
 <p class="muted">开发联调辅助页面（同源直连，无框架）。接口调试另见 <span class="mono">api/recordings.http</span>。</p>
+<p class="muted">当前转写使用 Mock ASR：页面中的摘要会总结 <span class="mono">[mock-asr] transcript …</span>，不会识别或总结所上传音频里的实际语音内容。接入真实 ASR 后，摘要才会对应录音内容。</p>
 
 <section>
   <h2>1. 上传音频（POST /v1/recordings）</h2>

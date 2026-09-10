@@ -1,19 +1,21 @@
 # 录音转写与智能摘要服务
 
-上传音频即返回 202，后台 Worker 池异步完成 Mock 转写与真实 LLM 结构化摘要（summary / key_points / todos），支持任务进度查询、分页列表、详情、失败手动重试与安全删除的 Go 后端服务。核心链路已全部实现并通过单元 / 集成 / 过程级 E2E 三层测试与 compose 全栈冒烟；真实 LLM 渠道已按 OpenAI 兼容规范接入，真实渠道联调验证待 API Key（见「已知缺口与不足」）。
+这是一个 Go 后端服务：客户端上传录音文件后立即获得任务 ID；后台 worker 异步完成转写和结构化摘要；客户端可查询进度、读取结果、重试失败任务或删除录音。
 
-## 技术选型
+服务目前的“转写”阶段是可配置的 Mock ASR，不会解析或识别音频内容。摘要阶段通过 OpenAI 兼容的 `chat/completions` 接口调用 LLM，默认配置面向小米 MiMo。这样可以先稳定验证任务流水线，再接入真实 LLM 做人工验收。
 
-| 维度 | 选定 | 落选方案 | 一句话理由 |
-| --- | --- | --- | --- |
-| 语言与框架 | Go 1.23 + Gin + GORM（底层 go-sql-driver/mysql） | — | GORM 只承担数据访问样板，关键并发路径（锁、条件更新）以 Raw SQL 显式控制 |
-| 关系库 | MySQL 8.x（选型对比按 8.4 定案；本机 compose 复用已有 mysql:8.0 镜像） | PostgreSQL 16 / SQLite | `SKIP LOCKED` 队列模式形态最成熟、原生 JSON 足够存结构化摘要，熟悉度直接降低调试与运维成本 |
-| 任务队列 | `tasks` 表即持久化队列 | Redis Stream / Celery 等消息队列 | 事实源即数据库，崩溃后状态不丢、零额外组件，单实例规模足够 |
-| 任务调度 | channel 非阻塞唤醒 + 1s 轮询兜底 | 纯轮询 | 上传到认领毫秒级响应，轮询兜底防丢唤醒；两者都只依赖数据库 |
-| 并发认领 | `FOR UPDATE SKIP LOCKED` + attempt 条件更新 | 应用内存锁 / 分布式锁 | 多 worker 取任务互不阻塞、互不重复，RowsAffected 保证同一执行轮次只有一个持有者 |
-| 状态与事件 | `task_events` 与状态同事务提交，slog 镜像 `app.jsonl` | 纯文件日志 | 状态与事件原子一致，文件镜像便于按 task_id grep 全生命周期 |
+## 功能与运行边界
 
-表结构变更用编号 SQL 迁移文件（只前滚，不用 GORM AutoMigrate）。逐项对比与演进触发条件见[详设 §1](docs/design/technical-design.md)。
+| 功能 | 状态 | 说明 |
+| --- | --- | --- |
+| 录音上传与本地存储 | 已实现 | 支持 `wav`、`mp3`、`m4a`、`aac`，单文件最大 50 MiB |
+| 异步处理 | 已实现 | 3 个 worker；MySQL `SKIP LOCKED` 认领任务，支持进程重启恢复 |
+| 任务和录音查询 | 已实现 | 任务进度、分页列表、完成后的转写文本和结构化摘要 |
+| 失败重试与删除 | 已实现 | 仅失败任务可手动重试；删除会取消在途处理并清理关联数据 |
+| LLM 摘要 | 已实现 | OpenAI 兼容适配器，严格校验 `summary`、`key_points`、`todos` 三个字段 |
+| 自动化验证 | 已实现 | 单元、MySQL 集成、过程级 golden E2E，以及 compose 全栈冒烟 |
+
+当前部署边界是**单应用实例 + MySQL + 本地文件存储**。如果要横向扩容，需要先引入任务租约和共享文件存储。默认恢复策略会重新执行中断的摘要任务，因此在异常重启时可能产生一次额外的 LLM 调用。
 
 ## 架构总览
 
@@ -43,55 +45,168 @@ flowchart TB
 
 ## 快速开始
 
+### 1. 准备配置
+
 ```bash
-make setup    # 生成 .env（已存在不覆盖），按提示填入 LLM_API_KEY
-make start    # 环境自检 → 起 app+db 容器 → 等待 /readyz 就绪
+make setup
 ```
 
-服务地址 `http://localhost:8080`。数据库健康后应用自动执行迁移、恢复任务与删除清理，`/readyz` 返回 200 才接收上传（`/healthz` 仅表示进程存活）。全部日常操作统一经 Makefile：
+这会从 `.env.example` 创建 `.env`，不会覆盖已有文件。至少确认下列值正确：
 
-| 命令 | 作用 |
-| --- | --- |
-| `make setup` | 复制 `.env.example` 为 `.env`（已存在不覆盖）并提示填写 `LLM_API_KEY` |
-| `make check` | 环境自检：Docker/Compose、Go 版本、`.env` 关键配置逐项输出 OK / 缺失（`start` / `dev` 自动先行调用） |
-| `make build` | 显式构建 / 更新 app 镜像；代码变更后执行（`start` 不自动重建已有镜像） |
-| `make start` | 一键启动：先自检，起 app + db 容器并等待 `/readyz` 就绪 |
-| `make dev` | 本地联调：纯 `go run` 直连 `.env` 的 MySQL，不起任何容器（见「本地联调」） |
-| `make down` | 停止并移除容器；保留数据卷与 `./logs` |
-| `make logs` | 跟踪 app 与 db 容器日志 |
-| `make test` | 全量测试：单元恒跑；集成与 E2E golden 需 `TEST_MYSQL_DSN`（未设逐层跳过并提示） |
-| `make e2e` | 仅 E2E golden（需 `TEST_MYSQL_DSN`）；另设 `E2E_COMPOSE=1` 附带 compose 全栈冒烟 |
-| `make lint` | `go vet` + `gofmt`；装有 golangci-lint 则一并执行 |
-| `make clean` | 清理构建产物与本地 `logs/`（不动容器与数据卷） |
+```dotenv
+MYSQL_DSN='recording:recordingpass@tcp(127.0.0.1:3306)/recording?parseTime=true&loc=UTC'
+LLM_BASE_URL=https://api.xiaomimimo.com/v1
+LLM_MODEL=mimo-v2-flash
+LLM_API_KEY=替换为你的真实密钥
+```
 
-配置项与默认值见 `.env.example` 注释（含测试库 `TEST_MYSQL_DSN` 示例与共享 MySQL 实例的建库语句）。
+`LLM_API_KEY` 为空时服务会拒绝启动。密钥只应保留在本机 `.env`，不要提交到仓库或写入日志。
 
-## 本地联调
+### 2. 用 Docker 启动
 
-- **`make dev`**：纯 `go run ./cmd/server` 直连 `.env` 里的 MySQL（本机共享实例的约定与建库语句见 `.env.example` 注释），**不起任何容器**；用过 `make start` 需先 `make down` 释放 8080。
-- **Mock 转写旋钮**（环境变量，重启生效）：
+```bash
+make start
+curl http://localhost:8080/readyz
+```
 
-  | 旋钮 | 行为 |
-  | --- | --- |
-  | 不设置（默认） | 生产 Mock：随机 5～15s 延迟、约 20% 转写失败（40001），种子由 task_id 决定——默认模式下撞上失败种子的任务，重试也会再失败 |
-  | `MOCK_ASR_DELAY=200ms` | 切换为确定性替身：固定延迟、恒成功，快速稳定跑通全链路 |
-  | `MOCK_ASR_FAIL_FIRST=true` | 配合确定性替身（需同时设置 `MOCK_ASR_DELAY`）：每任务首次转写必败、手动重试后成功——演示 失败 → retry → done 的推荐方式 |
+当 `/readyz` 返回 `200` 时，迁移和启动恢复均已完成，服务可以接收上传。服务地址为 `http://localhost:8080`；浏览器联调页在 `http://localhost:8080/ui`。
 
-- **LLM**：`.env` 填 `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY`（任何 OpenAI 兼容端点，本项目用小米 MiMo；三项均必填，空值启动即报错）。填占位 Key 可启动：摘要阶段 failed/50002，错误分类与重试交互仍可完整演示。
-- **联调入口**：浏览器联调页 `http://localhost:8080/ui`（开发辅助，同源直连无 CORS）；API 调试文件 [`api/recordings.http`](api/recordings.http)（VS Code REST Client / GoLand HTTP Client 直接可用）。
+代码改动后先执行 `make build`，再执行 `make start`。查看容器日志用 `make logs`，停止容器但保留数据卷用 `make down`。
+
+### 3. 本地开发模式
+
+已有可用 MySQL 时，可以不启动 compose：
+
+```bash
+make dev
+```
+
+该命令读取 `.env` 后运行 `go run ./cmd/server`。它占用 8080；若之前用过 `make start`，先运行 `make down` 释放端口。
+
+## 最短联调：用 Mock ASR 跑通流程
+
+为了让结果稳定且不必等待 5–15 秒，请在 `.env` 增加：
+
+```dotenv
+MOCK_ASR_DELAY=100ms
+```
+
+然后重启服务。此模式下 Mock ASR 固定延迟后恒成功，且**只根据任务 ID**生成转写文本。因此，下面的文件只是一个非空、扩展名正确的占位文件，不需要是真实音频：
+
+```bash
+printf 'demo recording bytes\n' > /tmp/meeting.wav
+
+curl -sS -X POST http://localhost:8080/v1/recordings \
+  -F 'file=@/tmp/meeting.wav;type=audio/wav'
+```
+
+响应形如：
+
+```json
+{
+  "recording_id": "…",
+  "task_id": "…",
+  "status": "pending"
+}
+```
+
+将响应中的 ID 代入下面请求，轮询到 `done`：
+
+```bash
+curl -sS http://localhost:8080/v1/tasks/<task_id>
+curl -sS http://localhost:8080/v1/recordings/<recording_id>
+```
+
+完成后的详情会包含类似 `[mock-asr] transcript for task …` 的确定性转写文本，以及 LLM 返回并校验后的 `summary`、`key_points`、`todos`。
+
+`api/recordings.http` 提供了六个接口的可直接执行请求，适用于 VS Code REST Client 和 GoLand HTTP Client；也可以用 `/ui` 完成同一条流程。
+
+## Mock 数据与故障演练
+
+这里有两类 Mock，作用不同。
+
+| 类型 | 何时使用 | 如何启用或使用 | 可验证内容 |
+| --- | --- | --- | --- |
+| 运行时 Mock ASR | 本地手工联调 | 配置 `MOCK_ASR_DELAY` 后重启服务 | 上传、异步状态流转、任务查询、删除和重试 |
+| 测试内 FakeLLM | 自动化测试 | `make test` 自动在测试进程中启动 | 正常摘要、超时、上游 500、坏 JSON、缺字段、超大响应 |
+
+运行时 Mock ASR 的配置如下：
+
+| 配置 | 行为 | 适合场景 |
+| --- | --- | --- |
+| 不设置 `MOCK_ASR_DELAY` | 每个任务按 task ID 固定地等待 5–14.9 秒；约 20% 任务失败，重试仍会得到相同结果 | 观察接近生产的随机性和失败分支 |
+| `MOCK_ASR_DELAY=100ms` | 固定延迟、恒成功 | 验证成功主链路，推荐默认使用 |
+| `MOCK_ASR_DELAY=100ms` 与 `MOCK_ASR_FAIL_FIRST=true` | 每个任务首轮转写失败（`40001`），手动重试后成功 | 演示 `failed → retry → done` |
+
+示例：验证重试。先设置最后一种配置并重启；上传占位 `.wav`，轮询到 `failed` 后执行：
+
+```bash
+curl -i -X POST http://localhost:8080/v1/tasks/<task_id>/retry
+curl -sS http://localhost:8080/v1/tasks/<task_id>
+```
+
+第二轮的 `attempt` 会从 `1` 增至 `2`，最终状态应为 `done`。
+
+FakeLLM 不需要也不能通过 `.env` 直接启用。它是 Go 测试中的本地 HTTP 服务器，真实摘要客户端会向它发请求。其覆盖场景和实现可见 [LLM 单元测试](tests/unit/llm_test.go) 与 [FakeLLM](internal/infrastructure/llm/fake.go)。
+
+## 接入真实 LLM 的人工验收
+
+在开始前，保留 `MOCK_ASR_DELAY=100ms`，这样只测试 LLM，不受 Mock ASR 随机延迟和失败影响。
+
+1. 在 `.env` 填入真实的 `LLM_BASE_URL`、`LLM_MODEL` 和 `LLM_API_KEY`，然后重启服务。
+2. 上传一个占位 `.wav` 或真实音频。当前 ASR 仍是 Mock，因此 LLM 收到的是确定性文本；这一步验证的是请求格式、认证、超时、响应解析和结果落库，而不是语音识别质量。
+3. 轮询 `GET /v1/tasks/<task_id>` 至终态，并读取 `GET /v1/recordings/<recording_id>`。成功标准是 `status=done`，且 `result.summary` 为非空字符串、`result.key_points` 和 `result.todos` 为数组。
+4. 临时把 `LLM_API_KEY` 改为错误值并重启，重复上传。任务应进入 `failed`，错误码为 `50002`，错误中不能出现 Key、Authorization 请求头或堆栈。
+5. 在 LLM 平台核对调用次数和费用。测试结束后恢复正确配置；不要把真实 Key 写入请求文件、截图或提交记录。
+
+真实渠道不放进自动化测试，避免产生不稳定的外部依赖与费用。已使用真实渠道完成一次人工烟测试：任务在首次执行中进入 `done`，返回了非空 `summary` 与合法的空 `key_points`、`todos` 数组。其余 LLM 错误路径由 FakeLLM 自动覆盖。
+
+### 已接入 LLM 后的手工验收
+
+先确保服务已经在 `http://localhost:8080` 运行。手工联调不需要启动、停止或重建服务，也不需要自动化脚本：发送一次上传请求后，直接在浏览器联调页查看任务和结果即可。
+
+为缩短等待时间，建议在启动当前服务前设置 `MOCK_ASR_DELAY=100ms`；若未设置，生产 Mock 会等待约 5–15 秒，且约 20% 的任务会进入 `failed/40001`。两个 Mock 配置的完整用途见下文“Mock 数据与故障演练”。
+
+使用仓库提供的测试录音上传：
+
+```bash
+curl -sS -X POST http://localhost:8080/v1/recordings \
+  -F 'file=@api/llm-smoke-demo.wav;type=audio/wav'
+```
+
+该命令只做一件事：上传文件并打印服务立即返回的 `202` 响应。响应中的 `recording_id` 和 `task_id` 是随后查询任务和结果所需的标识。打开 `http://localhost:8080/ui`，将这两个 ID 粘贴到相应输入框，依次点击“查询任务”和“录音详情”即可看到完整链路。
+
+成功时，详情响应中 `task.status` 为 `done`，`transcript` 以 `[mock-asr]` 开头，`result.summary` 为非空字符串，`result.key_points` 与 `result.todos` 为数组。若测试完成后不保留该记录，可执行：
+
+```bash
+curl -i -X DELETE "http://localhost:8080/v1/recordings/<recording_id>"
+```
+
+### 浏览器联调页
+
+服务启动后直接访问 `http://localhost:8080/ui`。页面与 API 同源，不需要配置 CORS 或额外启动前端项目。
+
+1. 在“上传录音”区域选择一个非空的 `.wav`、`.mp3`、`.m4a` 或 `.aac` 文件；当前 Mock ASR 下，任意非空占位文件都可用于演练。
+2. 点击上传后，复制页面显示的 `recording_id` 和 `task_id`；页面会显示 `pending`、`transcribing`、`summarizing`、`done` 或 `failed`。
+3. 使用“查询任务”观察状态和异步错误；成功后使用“录音详情”查看 Mock transcript 与 LLM 返回的三段摘要。
+4. 使用“任务重试”验证失败任务的第二轮处理；需要稳定复现时，将 `MOCK_ASR_DELAY=100ms` 与 `MOCK_ASR_FAIL_FIRST=true` 写入 `.env` 后重启当前服务。
+5. 使用“录音列表”检查分页和状态汇总；使用“删除录音”清理手工测试数据。
+
+`/ui` 是开发联调辅助页面。它会调用六个 API，适合检查完整响应；协议级请求、响应和变量占位可使用 [`api/recordings.http`](api/recordings.http)。Postman 用户可直接导入 [`api/recordings.postman_collection.json`](api/recordings.postman_collection.json)，上传后将响应中的两个 ID 填入 Collection Variables 即可继续执行其他请求。
 
 ## API 概览
 
-| 方法与路径 | 语义 |
+| 方法与路径 | 说明 |
 | --- | --- |
-| POST /v1/recordings | multipart 上传（字段 `file`；wav/mp3/m4a/aac，≤50MiB），202 立即返回 |
-| GET /v1/tasks/{task_id} | 查询任务阶段与错误（失败任务仍 200，错误在 task.error 中） |
-| GET /v1/recordings?page=1&page_size=20 | 分页列表（page_size 默认 20、最大 100，创建时间倒序） |
-| GET /v1/recordings/{id} | 录音详情（done 后含 transcript 与结构化摘要） |
-| POST /v1/tasks/{task_id}/retry | 手动重试（仅 failed 可重试，否则 409） |
-| DELETE /v1/recordings/{id} | 删除录音文件与三表关联数据，204 |
+| `POST /v1/recordings` | multipart 上传，字段名 `file`；成功返回 `202` |
+| `GET /v1/tasks/{task_id}` | 查询处理状态、执行轮次和异步错误 |
+| `GET /v1/recordings` | 分页列表；`page` 默认 1，`page_size` 默认 20、最大 100 |
+| `GET /v1/recordings/{id}` | 读取录音详情；完成后包含转写与结构化摘要 |
+| `POST /v1/tasks/{task_id}/retry` | 重试失败任务；其他状态返回 `409` |
+| `DELETE /v1/recordings/{id}` | 取消处理并删除录音、任务及事件数据；成功返回 `204` |
+| `GET /healthz` / `GET /readyz` | 进程存活 / 服务就绪检查 |
 
-另有 `/healthz`（进程存活）与 `/readyz`（启动恢复完成才就绪）。错误保留合理 HTTP 状态，并返回稳定的数字业务 code：
+失败请求使用统一结构：
 
 ```json
 {
@@ -103,91 +218,44 @@ make start    # 环境自检 → 起 app+db 容器 → 等待 /readyz 就绪
 }
 ```
 
-常用错误码（40001/50001～50003 为异步执行码，只出现在任务的 `error.code` 中、不映射 HTTP）：
+异步错误会显示在任务查询结果的 `error` 字段中。常见代码：`40001`（Mock 转写失败）、`50001`（LLM 超时）、`50002`（LLM 网络错误或非 2xx）、`50003`（LLM 输出不符合结构）。
 
-| code | 语义 |
+## 自动化测试
+
+先为隔离的测试库设置 DSN；测试启动时会检查 DSN 含 `test`，防止误连业务库：
+
+```bash
+export TEST_MYSQL_DSN='recording:recordingpass@tcp(127.0.0.1:3306)/recording_test?parseTime=true&loc=UTC'
+make test
+```
+
+| 命令 | 覆盖范围 | 前提 |
+| --- | --- | --- |
+| `make test` | 单元测试；有 `TEST_MYSQL_DSN` 时再跑集成与过程级 E2E | Go；后两层还需独立 MySQL 测试库 |
+| `make e2e` | 过程级 golden E2E | `TEST_MYSQL_DSN` |
+| `E2E_COMPOSE=1 TEST_MYSQL_DSN='…' go test ./e2e/ -run TestE2ECompose -race -count=1 -v` | compose 全栈冒烟 | Docker、已构建镜像、测试 DSN |
+| `make lint` | `go vet`、`gofmt`，以及已安装时的 `golangci-lint` | Go |
+
+过程级 E2E 会用真实 HTTP、真实 MySQL、确定性 Mock ASR 和 FakeLLM 驱动主链路、重试、删除、恢复、并发和列表场景。预期结果位于 `e2e/expected/`，每次运行采集的结果位于 `e2e/actual/`；失败时检查 `e2e/diff/`。
+
+## 数据与运维说明
+
+数据库包含 `recordings`、`tasks` 和 `task_events` 三张表；建表迁移在 [migrations/0001_init.sql](migrations/0001_init.sql)，服务启动时只前滚执行。音频字节默认写入 `DATA_DIR`，日志默认写入 `logs/app.jsonl`。
+
+| 命令 | 作用 |
 | --- | --- |
-| 30001 | 任务不存在（404） |
-| 30002 | 任务并非 failed，不允许重试（409） |
-| 40001 | Mock 转写失败 |
-| 50001 / 50002 / 50003 | 摘要超时 / LLM 网络或非 2xx / 摘要输出不符合结构 |
-| 90004 | 逻辑关联异常（500） |
-| 90005 | 服务未就绪：启动恢复未完成或退出 drain 中（503） |
+| `make check` | 检查 Docker、Compose、Go 和 `.env` 必填配置 |
+| `make setup` | 创建 `.env`，不覆盖已有配置 |
+| `make build` | 重建应用镜像 |
+| `make start` / `make down` | 启动 / 停止 compose 服务 |
+| `make logs` | 跟踪 app 与 db 容器日志 |
+| `make dev` | 本地运行服务，不启动容器 |
+| `make clean` | 删除本地构建产物和 `logs/`，不删除 Docker 数据卷 |
 
-完整端点契约、码表与超时规则见详设 §8；可直接执行的请求示例见 [`api/recordings.http`](api/recordings.http)。
+## 设计与调试资料
 
-## 数据模型
-
-三张表（[`migrations/0001_init.sql`](migrations/0001_init.sql)，启动时自动执行、只前滚）。表间为逻辑关联、无物理外键，成对创建与显式删除由应用事务负责；ID 为应用生成 UUID（CHAR(36) ASCII），时间统一 UTC DATETIME(6)。
-
-**recordings** — 录音文件元数据
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| id | CHAR(36) | UUID 主键 |
-| original_filename | VARCHAR(512) | 上传原始文件名 |
-| storage_path | VARCHAR(512) | 落盘路径，`UNIQUE` |
-| extension | VARCHAR(8) | CHECK：wav / mp3 / m4a / aac |
-| size_bytes | BIGINT | CHECK：> 0 且 ≤ 50MiB |
-| content_hash | CHAR(64) | 上传时流式计算的 SHA-256，去重预留（可空） |
-| deleting_at | DATETIME(6) | 软删除标记：NULL=正常，非空=删除中/清理未完 |
-| created_at / updated_at | DATETIME(6) | 创建与更新时间 |
-
-索引：`UNIQUE(storage_path)`；`(created_at DESC, id DESC)` 支撑列表倒序。
-
-**tasks** — 一条录音对应一个任务，兼任持久化队列（重试复用同一 id）
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| id | CHAR(36) | UUID 主键 |
-| recording_id | CHAR(36) | 逻辑关联，`UNIQUE(recording_id)`：一录音一任务 |
-| status | VARCHAR(32) | CHECK：pending / transcribing / summarizing / done / failed |
-| attempt | INT | 执行轮次，CHECK > 0；重试 +1 |
-| event_seq | BIGINT UNSIGNED | 当前事件序列，与事件表同事务推进 |
-| transcript | MEDIUMTEXT | Mock 转写文本 |
-| summary_json | JSON | LLM 结构化摘要（summary / key_points / todos） |
-| error_code / error_message | INT / TEXT | 失败业务码与消息 |
-| created_request_id | VARCHAR(64) | 创建该任务的请求 ID |
-| created_at / updated_at / started_at / finished_at | DATETIME(6) | 创建 / 更新 / 本轮开始 / 终态时间 |
-
-索引：`(status, created_at, id)` 支撑认领扫描。
-
-**task_events** — 与状态变更同事务写入的生命周期事件
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| id | BIGINT UNSIGNED | 自增主键 |
-| event_id | CHAR(36) | 事件 UUID，`UNIQUE`（镜像重放去重） |
-| task_id / recording_id | CHAR(36) | 逻辑关联，无物理外键 |
-| event_seq | BIGINT UNSIGNED | `UNIQUE(task_id, event_seq)`：顺序与去重 |
-| attempt | INT | 事件发生的执行轮次 |
-| event | VARCHAR(64) | 事件名（task_created / task_claimed / task_failed 等） |
-| occurred_at / level | DATETIME(6) / VARCHAR(8) | 发生时间与级别（INFO/WARN/ERROR） |
-| from_status / to_status / stage | VARCHAR(32) | 状态转换与所处阶段 |
-| request_id / created_request_id / instance_id | VARCHAR(64) / VARCHAR(64) / CHAR(36) | 请求与实例标识 |
-| error_code / error_message | INT / VARCHAR(512) | 失败码与消息 |
-| stage_elapsed_ms / attempt_elapsed_ms / task_elapsed_ms | BIGINT UNSIGNED | 阶段 / 轮次 / 全任务耗时 |
-| details | JSON | 扩展细节 |
-
-事件提交后尽力镜像到 `logs/app.jsonl`（`jq -c 'select(.task_id == "<id>")' logs/app.jsonl` 可回看完整生命周期）。字段设计说明见架构文档 §4 与详设 §2/§4。
-
-## 测试
-
-三层结构（设计见[测试设计](docs/design/test-design.md)）：`tests/unit` 无外部依赖，覆盖领域状态机、错误码、worker 池、LLM 适配器等；`tests/integration` 连隔离的真实 MySQL（`TEST_MYSQL_DSN`），经 httptest 验证迁移、事务、锁与各接口；`e2e/` 为过程级 golden 比对——`expected/` 手写预期结果、`actual/` 采集真实运行、逐字段深度比对（`e2e/diff` 为空即通过），另设 `E2E_COMPOSE=1` 跑 compose 全栈冒烟。`make test` 单元恒跑、集成与 E2E 需 `TEST_MYSQL_DSN`（未设逐层跳过）；`make e2e` 只跑 E2E golden。全部默认 `-race`。
-
-## 已知缺口与不足
-
-- **单实例边界**：仅支持一个应用实例；多实例需先做任务租约与共享文件存储。
-- **reset 恢复会重做在途任务**：默认 `RECOVERY_MODE=reset` 将中断的 transcribing/summarizing 任务重置重做，LLM 可能重复调用
-- **无上传幂等**：`content_hash` 已落库，但哈希去重未实现；上传响应丢失时重复上传会产生重复录音。
-- **无失败自动重试**：失败后需手动 `POST /retry`（手动重试已交付）；自动重试 + 指数退避为候选增强。
-- **生产 Mock 失败种子只看 task_id**：重试不复掷，默认模式下撞上失败种子的任务重试也会失败（演示重试请用 `MOCK_ASR_FAIL_FIRST`）。
-- **公网部署未做**：无鉴权与 TLS，SSE 流式摘要与前端正式实现不在范围（`/ui` 仅为开发辅助）。
-
-## 文档索引
-
-- [docs/design/architecture.md](docs/design/architecture.md) — 总体架构：组件、端到端数据流、数据模型、状态机与部署拓扑
-- [docs/design/technical-design.md](docs/design/technical-design.md) — 详细技术设计：存储选型、DDD 分层、并发模型、事务与认领协议、事件日志、错误码
-- [docs/design/test-design.md](docs/design/test-design.md) — 测试设计：三层用例与 golden 比对机制
-- [api/recordings.http](api/recordings.http) — 六接口 API 调试文件
-- [migrations/0001_init.sql](migrations/0001_init.sql) — 初始建表迁移
+- [架构设计](docs/design/architecture.md)：组件、时序、状态机、数据模型和部署拓扑。
+- [技术设计](docs/design/technical-design.md)：并发认领、事务、删除、恢复、错误码和 LLM 适配器约定。
+- [测试设计](docs/design/test-design.md)：测试分层、替身设施、用例和 golden 比对。
+- [HTTP 请求示例](api/recordings.http)：六个 API 的手工调试请求。
+- [初始迁移](migrations/0001_init.sql)：三张表的定义和索引。
