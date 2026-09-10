@@ -1,10 +1,11 @@
-// 事务②/④ 适配器（详设 §4.3 认领协议、§4.4 条件更新、§7.3 原子性协议）：
-// 认领 = 短事务（SKIP LOCKED 选 pending → 锁 recording 复查 → 条件更新 + 事件），
-// 不跨外部调用持有；阶段写入条件 id+attempt+expected_status，未命中即 stale 丢弃。
+// 事务②③④⑤ 适配器（详设 §4.3 认领协议、§4.1 失败/完成出边、§4.4 条件更新、§7.3
+// 原子性协议）：认领 = 短事务（SKIP LOCKED 选 pending → 锁 recording 复查 → 条件更新
+// + 事件），不跨外部调用持有；阶段写入条件 id+attempt+expected_status，未命中即 stale 丢弃。
 package mysql
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"recording-transcription/internal/application/errorcode"
 	"recording-transcription/internal/application/ports"
 	domain "recording-transcription/internal/domain/recording"
 	"recording-transcription/internal/infrastructure/logging"
@@ -223,6 +225,202 @@ func (t *ProcessingTxGORM) SaveTranscription(ctx context.Context, key domain.Exe
 	if err := tx.Create(toTaskEventPO(event)).Error; err != nil {
 		_ = tx.Rollback().Error
 		return fmt.Errorf("写入 transcription_completed 事件失败: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
+	}
+	logging.MirrorEvent(t.logger, event)
+	return nil
+}
+
+// CompleteTask 事务⑤（详设 §4.4/§7.3，架构 §3）：锁任务 → 锁录音确认未删除 →
+// 条件更新（id + attempt + expected_status=summarizing）写 summary_json 并推进 done
+// （finished_at 同批落库）→ 同事务 task_completed → COMMIT。摘要解析在事务外完成、
+// 校验通过才进事务；条件未命中返回 ErrStaleExecution，结果丢弃不复活任务。
+func (t *ProcessingTxGORM) CompleteTask(ctx context.Context, key domain.ExecutionKey, s domain.Summary) error {
+	tx := t.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("开启事务⑤失败: %w", tx.Error)
+	}
+
+	var task TaskPO
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", key.TaskID).First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
+	if err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("事务⑤锁定任务失败: %w", err)
+	}
+	if task.Attempt != key.Attempt || domain.TaskStatus(task.Status) != domain.StatusSummarizing {
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
+
+	var rec RecordingPO
+	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", task.RecordingID).First(&rec).Error
+	if err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("事务⑤锁定录音失败: %w", err)
+	}
+	if rec.DeletingAt != nil {
+		// 迟到结果只记日志，不复活任务（详设 §4.1「worker 落结果 vs DELETE」）。
+		_ = tx.Rollback().Error
+		t.logger.Info("录音删除中，摘要结果丢弃",
+			slog.String("task_id", key.TaskID), slog.Int("attempt", key.Attempt))
+		return ports.ErrStaleExecution
+	}
+
+	// summary_json 列形状与 domain.ParseSummary 严格对齐（小写下划线键）；
+	// 领域 Summary 无 JSON 标签，不能直接 Marshal。
+	summaryJSON, err := json.Marshal(struct {
+		Summary   string   `json:"summary"`
+		KeyPoints []string `json:"key_points"`
+		Todos     []string `json:"todos"`
+	}{s.Summary, s.KeyPoints, s.Todos})
+	if err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("事务⑤序列化摘要失败: %w", err)
+	}
+
+	domTask := domain.ProcessingTask{EventSeq: task.EventSeq}
+	seq := domTask.AllocateEventSeq()
+	now := time.Now().UTC()
+	res := tx.Model(&TaskPO{}).
+		Where("id = ? AND attempt = ? AND status = ?", key.TaskID, key.Attempt, string(domain.StatusSummarizing)).
+		Updates(map[string]any{
+			"status":       string(domain.StatusDone),
+			"summary_json": string(summaryJSON),
+			"event_seq":    domTask.EventSeq,
+			"updated_at":   now,
+			"finished_at":  now,
+		})
+	if res.Error != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("事务⑤条件更新失败: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
+
+	from, to, stage := domain.StatusSummarizing, domain.StatusDone, "summarizing"
+	event := domain.TaskEvent{
+		EventID:          uuid.New(),
+		TaskID:           task.ID,
+		RecordingID:      task.RecordingID,
+		EventSeq:         seq,
+		Attempt:          key.Attempt,
+		Kind:             domain.EventTaskCompleted,
+		OccurredAt:       now,
+		Level:            "INFO",
+		FromStatus:       &from,
+		ToStatus:         &to,
+		Stage:            &stage,
+		CreatedRequestID: task.CreatedRequestID,
+		InstanceID:       t.instanceID,
+	}
+	if err := tx.Create(toTaskEventPO(event)).Error; err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("写入 task_completed 事件失败: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
+	}
+	logging.MirrorEvent(t.logger, event)
+	return nil
+}
+
+// FailTask 事务③（详设 §4.1 transcribing/summarizing→failed、§4.4/§7.3，架构 §3）：
+// 锁任务 → 校验 attempt 与在途状态（transcribing/summarizing 均可失败，转写失败 40001
+// 与 LLM 失败 50001~50003 共用）→ 锁录音确认未删除 → 条件更新写 error_code/error_message
+// 并落 failed（finished_at 同批）→ 同事务 task_failed → COMMIT。条件未命中返回
+// ErrStaleExecution，结果丢弃不复活任务。
+func (t *ProcessingTxGORM) FailTask(ctx context.Context, key domain.ExecutionKey, code errorcode.ErrorCode, msg string) error {
+	tx := t.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("开启事务③失败: %w", tx.Error)
+	}
+
+	var task TaskPO
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", key.TaskID).First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
+	if err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("事务③锁定任务失败: %w", err)
+	}
+	if task.Attempt != key.Attempt {
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
+	fromStatus := domain.TaskStatus(task.Status)
+	if fromStatus != domain.StatusTranscribing && fromStatus != domain.StatusSummarizing {
+		// 已终态（done/failed）或未认领（pending）：迟到失败静默丢弃。
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
+
+	var rec RecordingPO
+	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", task.RecordingID).First(&rec).Error
+	if err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("事务③锁定录音失败: %w", err)
+	}
+	if rec.DeletingAt != nil {
+		_ = tx.Rollback().Error
+		t.logger.Info("录音删除中，失败结果丢弃",
+			slog.String("task_id", key.TaskID), slog.Int("attempt", key.Attempt))
+		return ports.ErrStaleExecution
+	}
+
+	domTask := domain.ProcessingTask{EventSeq: task.EventSeq}
+	seq := domTask.AllocateEventSeq()
+	now := time.Now().UTC()
+	res := tx.Model(&TaskPO{}).
+		Where("id = ? AND attempt = ? AND status = ?", key.TaskID, key.Attempt, string(fromStatus)).
+		Updates(map[string]any{
+			"status":        string(domain.StatusFailed),
+			"error_code":    int(code),
+			"error_message": msg,
+			"event_seq":     domTask.EventSeq,
+			"updated_at":    now,
+			"finished_at":   now,
+		})
+	if res.Error != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("事务③条件更新失败: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
+
+	to, stage := domain.StatusFailed, string(fromStatus)
+	codeInt := int(code)
+	event := domain.TaskEvent{
+		EventID:          uuid.New(),
+		TaskID:           task.ID,
+		RecordingID:      task.RecordingID,
+		EventSeq:         seq,
+		Attempt:          key.Attempt,
+		Kind:             domain.EventTaskFailed,
+		OccurredAt:       now,
+		Level:            "ERROR",
+		FromStatus:       &fromStatus,
+		ToStatus:         &to,
+		Stage:            &stage,
+		CreatedRequestID: task.CreatedRequestID,
+		InstanceID:       t.instanceID,
+		ErrorCode:        &codeInt,
+		ErrorMessage:     msg,
+	}
+	if err := tx.Create(toTaskEventPO(event)).Error; err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("写入 task_failed 事件失败: %w", err)
 	}
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)

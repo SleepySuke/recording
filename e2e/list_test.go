@@ -51,11 +51,11 @@ type e08Actual struct {
 	UniqueItemsCollected int               `json:"unique_items_collected"`
 }
 
-// TestE2E08_List：2 真实上传（至 summarizing）+ 6 条 pending 种子 + 1 条 deleting 种子。
+// TestE2E08_List：2 真实上传（至 done，T07 起流水线终点）+ 6 条 pending 种子 + 1 条 deleting 种子。
 func TestE2E08_List(t *testing.T) {
-	h := newE2E(t, 0) // 0 延迟确定性替身：两个上传最快到达 summarizing
+	h := newE2E(t, 0) // 0 延迟确定性替身：两个上传最快到达 done
 
-	// 真实上传 2 个至 summarizing（顺序上传，created_at 严格递增：upload-1 早于 upload-2）。
+	// 真实上传 2 个至 done（顺序上传，created_at 严格递增：upload-1 早于 upload-2）。
 	a := e08Actual{}
 	a.Uploads = make(map[string]struct {
 		HTTPStatus int    `json:"http_status"`
@@ -78,7 +78,7 @@ func TestE2E08_List(t *testing.T) {
 		}{HTTPStatus: code, Status: resp.Status}
 		keyOf[resp.RecordingID] = key
 		uploadKeys[i-1] = key
-		h.pollTask(resp.TaskID, "summarizing", 10*time.Second)
+		h.pollTask(resp.TaskID, "done", 10*time.Second)
 	}
 
 	// 停池后再直插种子：池以 20ms 轮询持续认领 pending，不停池则种子会被推进，

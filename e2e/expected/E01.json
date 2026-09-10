@@ -14,18 +14,28 @@
     "created_at": "<ts>",
     "task": {
       "id": "<task_id>",
-      "status": "summarizing",
+      "status": "done",
       "attempt": 1
     },
-    "transcript": "[mock-asr] transcript for task <task_id> (seed=<seed>)"
+    "transcript": "[mock-asr] transcript for task <task_id> (seed=<seed>)",
+    "result": {
+      "summary": "确定性摘要：转写流水线已完成收尾",
+      "key_points": ["完成 LLM 摘要接入", "验证完成与失败事务原子提交"],
+      "todos": []
+    }
   },
   "task_final": {
-    "status": "summarizing",
+    "status": "done",
     "attempt": 1,
-    "event_seq": 3,
-    "transcript": "[mock-asr] transcript for task <task_id> (seed=<seed>)"
+    "event_seq": 4,
+    "transcript": "[mock-asr] transcript for task <task_id> (seed=<seed>)",
+    "summary_json": {
+      "summary": "确定性摘要：转写流水线已完成收尾",
+      "key_points": ["完成 LLM 摘要接入", "验证完成与失败事务原子提交"],
+      "todos": []
+    }
   },
-  "status_sequence": ["pending", "transcribing", "summarizing"],
+  "status_sequence": ["pending", "transcribing", "summarizing", "done"],
   "events": [
     {
       "event_seq": 1,
@@ -50,16 +60,24 @@
       "error_code": null,
       "from_status": "transcribing",
       "to_status": "summarizing"
+    },
+    {
+      "event_seq": 4,
+      "event": "task_completed",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": "summarizing",
+      "to_status": "done"
     }
   ],
   "storage_file": {
     "exists": true,
     "size_bytes": 8192
   },
-  "mirror_events": ["task_created", "task_claimed", "transcription_completed"],
+  "mirror_events": ["task_created", "task_claimed", "transcription_completed", "task_completed"],
   "table_counts": {
     "recordings": 1,
-    "task_events": 3,
+    "task_events": 4,
     "tasks": 1
   }
 }

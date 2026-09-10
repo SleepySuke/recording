@@ -12,6 +12,7 @@ import (
 	apprec "recording-transcription/internal/application/recording"
 	"recording-transcription/internal/infrastructure/asr/mock"
 	"recording-transcription/internal/infrastructure/filestore/local"
+	"recording-transcription/internal/infrastructure/llm"
 	"recording-transcription/internal/infrastructure/logging"
 	"recording-transcription/internal/infrastructure/persistence/mysql"
 	"recording-transcription/internal/infrastructure/worker"
@@ -21,8 +22,8 @@ import (
 )
 
 // NewServer 组装：日志 + DB（连接 + 迁移）+ 上传链 + 异步流水线（worker 池 + 认领 +
-// Mock 转写）+ http.Server。返回的 shutdown 停止 worker 池（优雅 drain 在 T10 完成）；
-// 恢复流程与就绪门控在 T11。
+// Mock 转写 + LLM 摘要 + 完成失败事务）+ http.Server。返回的 shutdown 停止 worker 池
+// （优雅 drain 在 T10 完成）；恢复流程与就绪门控在 T11。
 func NewServer(cfg *Config) (*http.Server, *slog.Logger, func(), error) {
 	logger, err := logging.New(logging.Options{
 		Dir:       cfg.LogDir,
@@ -56,7 +57,10 @@ func NewServer(cfg *Config) (*http.Server, *slog.Logger, func(), error) {
 	if cfg.MockASRDelay >= 0 {
 		transcriber = &mock.DeterministicTranscriber{Delay: cfg.MockASRDelay}
 	}
-	processSvc := processing.NewProcessService(processingTx, query, transcriber, worker.NewCancelTable(), logger)
+	// 摘要适配器（详设 §9）：OpenAI 兼容渠道（T01 渠道记录：小米 MiMo）；
+	// 超时/响应体上限内建于适配器，llmCtx 在其内部自 taskCtx 派生（§3.4）。
+	summarizer := llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMAPIKey, cfg.LLMTimeout, llm.DefaultMaxResponseBytes)
+	processSvc := processing.NewProcessService(processingTx, query, transcriber, summarizer, worker.NewCancelTable(), logger)
 	pool := worker.NewPool(cfg.WorkerConcurrency, cfg.TaskPollInterval, processSvc.Process)
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	pool.Start(runCtx)

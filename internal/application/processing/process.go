@@ -1,13 +1,17 @@
-// Package processing 异步流水线用例（详设 §3.2 worker 控制流，本任务实现到 SaveT
-// 分支：认领 → 取消表登记 → 复查 → Mock 转写 → 事务④；摘要与失败事务在 T07）。
-// 所有出口（成功 / stale 丢弃 / 外呼失败 / 认领失败）都清理取消表登记后返回。
+// Package processing 异步流水线用例（详设 §3.2 worker 控制流）：
+// 分支：认领 → 取消表登记 → 复查 → Mock 转写 → 事务④ → LLM 摘要 → 事务⑤（done）；
+// 任何阶段失败（含转写失败 40001）经事务③落 failed。所有出口（成功 / stale 丢弃 /
+// 外呼失败 / 认领失败 / 停止认领）都清理取消表登记后返回。
 package processing
 
 import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
+	"time"
 
+	"recording-transcription/internal/application/errorcode"
 	"recording-transcription/internal/application/ports"
 	domain "recording-transcription/internal/domain/recording"
 )
@@ -19,23 +23,45 @@ type CancelRegistry interface {
 	Unregister(key domain.ExecutionKey)
 }
 
-// ProcessService 单轮「认领→转写→保存」用例，由 worker 池每轮调用。
+// §5.5 落库失败重试参数：保留内存产物，间隔 200ms/500ms 再试 ≤2 次，只重试数据库
+// 写入、不重调外部服务；persistTimeout 为每次写入的短期限（§3.4：从 runCtx 派生的
+// 新短期限 context，绝不用已超时的 llmCtx）。
+const (
+	persistTimeout = 5 * time.Second
+)
+
+var persistRetryDelays = []time.Duration{200 * time.Millisecond, 500 * time.Millisecond}
+
+// ProcessService 单轮「认领→转写→摘要→完成/失败」用例，由 worker 池每轮调用。
 type ProcessService struct {
 	tx          ports.ProcessingTx
 	query       ports.RecordingQuery
 	transcriber ports.Transcriber
+	summarizer  ports.Summarizer
 	table       CancelRegistry
 	logger      *slog.Logger
+	halted      atomic.Bool // §5.5：落库持续失败后置位，停止认领（受控退出 T10 完善）
 }
 
 // NewProcessService 构造流水线用例。
-func NewProcessService(tx ports.ProcessingTx, query ports.RecordingQuery, transcriber ports.Transcriber, table CancelRegistry, logger *slog.Logger) *ProcessService {
-	return &ProcessService{tx: tx, query: query, transcriber: transcriber, table: table, logger: logger}
+func NewProcessService(tx ports.ProcessingTx, query ports.RecordingQuery, transcriber ports.Transcriber,
+	summarizer ports.Summarizer, table CancelRegistry, logger *slog.Logger) *ProcessService {
+	return &ProcessService{
+		tx: tx, query: query, transcriber: transcriber, summarizer: summarizer,
+		table: table, logger: logger,
+	}
 }
 
+// Halted 报告服务是否因落库持续失败停止认领（§5.5；测试断言用）。
+func (s *ProcessService) Halted() bool { return s.halted.Load() }
+
 // Process 执行一轮：无可认领立即返回（worker 回 select 等待唤醒/轮询）。
-// 认领事务在 ProcessingTx 内闭合，绝不跨外部转写调用持有（详设 §4.2）。
+// 认领事务在 ProcessingTx 内闭合，绝不跨外部转写/摘要调用持有（详设 §4.2）。
 func (s *ProcessService) Process(ctx context.Context) {
+	if s.halted.Load() {
+		// §5.5：落库持续失败后停止认领，保留产物待恢复；受控退出机制 T10 完善。
+		return
+	}
 	claimed, ok, err := s.tx.ClaimNext(ctx)
 	if err != nil {
 		// 孤儿任务（90004）等：记录日志返回；认领阻断与就绪门控在 T11（详设 §4.3）。
@@ -63,21 +89,133 @@ func (s *ProcessService) Process(ctx context.Context) {
 
 	transcript, err := s.transcriber.Transcribe(taskCtx, key.TaskID)
 	if err != nil {
-		// 事务③（failed + 40001 + task_failed）在 T07 接入；本任务记录后返回，
-		// 任务停留 transcribing，由启动恢复（T11）处理。取消（删除/停机）不落伪 failed。
-		s.logger.Warn("转写失败",
-			slog.String("task_id", key.TaskID), slog.Int("attempt", key.Attempt), slog.Any("err", err))
-		return
-	}
-
-	if err := s.tx.SaveTranscription(ctx, key, transcript); err != nil {
-		if errors.Is(err, ports.ErrStaleExecution) {
-			// §4.4：stale 静默丢弃，不复活任务、不报错 worker。
-			s.logger.Info("stale 执行，转写结果丢弃",
+		// 取消（删除/停机）不落伪 failed：丢弃结果，任务保持在途供恢复/清理（§3.4）。
+		if errors.Is(err, context.Canceled) {
+			s.logger.Info("任务已取消，转写中止",
 				slog.String("task_id", key.TaskID), slog.Int("attempt", key.Attempt))
 			return
 		}
-		s.logger.Error("保存转写失败",
-			slog.String("task_id", key.TaskID), slog.Int("attempt", key.Attempt), slog.Any("err", err))
+		// 事务③：转写失败 40001（§4.1 transcribing→failed），与 LLM 失败共用 FailTask。
+		s.failTask(ctx, key, errorcode.CodeASRFailed, err)
+		return
+	}
+
+	// 事务④：外部成功但落库失败按 §5.5 有界重试；仍失败则停止推进（不能带着
+	// 未落库的 transcript 进入摘要——CompleteTask 的条件更新会因状态不匹配被拒）。
+	if err := s.persist(ctx, key, "保存转写", func(c context.Context) error {
+		return s.tx.SaveTranscription(c, key, transcript)
+	}); err != nil {
+		return
+	}
+
+	summary, err := s.summarizer.Summarize(taskCtx, transcript)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			// 删除/停机取消：丢弃摘要结果，不落伪 failed（详设 §3.4）；真实适配器
+			// 的超时表现为 ErrLLMTimeout，不会误入此分支。
+			s.logger.Info("任务已取消，摘要中止",
+				slog.String("task_id", key.TaskID), slog.Int("attempt", key.Attempt))
+			return
+		}
+		// 事务③：LLM 失败按哨兵分类 50001/50002/50003（详设 §9）。
+		s.failTask(ctx, key, llmErrorCode(err), err)
+		return
+	}
+
+	// 事务⑤：summary_json + done + task_completed 原子提交（§4.4）。
+	_ = s.persist(ctx, key, "完成任务", func(c context.Context) error {
+		return s.tx.CompleteTask(c, key, summary)
+	})
+}
+
+// failTask 事务③落库：消息限长（task_events.error_message VARCHAR(512)），且不携带
+// Key 或堆栈（§9——适配器错误只含状态码与解析原因，此处再截断兜底）。
+func (s *ProcessService) failTask(ctx context.Context, key domain.ExecutionKey, code errorcode.ErrorCode, cause error) {
+	msg := truncateMessage(cause.Error())
+	if err := s.persist(ctx, key, "记录失败", func(c context.Context) error {
+		return s.tx.FailTask(c, key, code, msg)
+	}); err == nil {
+		s.logger.Warn("任务失败已落库",
+			slog.String("task_id", key.TaskID), slog.Int("attempt", key.Attempt),
+			slog.Int("code", int(code)), slog.String("msg", msg))
 	}
 }
+
+// persist 执行一次阶段落库并按 §5.5 处理失败：stale 静默丢弃（§4.4）；其他错误保留
+// 内存产物，间隔 200ms/500ms 重试 ≤2 次（只重试写入，不重调外部服务）；仍失败记
+// ERROR 并置 halted 停止认领（§5.5；受控退出机制 T10 完善）。每次写入使用从 runCtx
+// 派生的新短期限 context（§3.4），不用已超时的 llmCtx。
+func (s *ProcessService) persist(ctx context.Context, key domain.ExecutionKey, stage string, op func(context.Context) error) error {
+	var last error
+	for attempt := 0; ; attempt++ {
+		opCtx, cancel := context.WithTimeout(ctx, persistTimeout)
+		err := op(opCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, ports.ErrStaleExecution) {
+			// §4.4：stale 静默丢弃，不复活任务、不报错 worker、不重试。
+			s.logger.Info("stale 执行，结果丢弃",
+				slog.String("task_id", key.TaskID), slog.Int("attempt", key.Attempt), slog.String("stage", stage))
+			return err
+		}
+		last = err
+		if attempt >= len(persistRetryDelays) {
+			break
+		}
+		s.logger.Warn("落库失败，稍后重试",
+			slog.String("task_id", key.TaskID), slog.String("stage", stage),
+			slog.Int("attempt_no", attempt+1), slog.Any("err", err))
+		// 重试间隔受 ctx 控制（§5.5）；等待被取消则立即停止重试。
+		timer := time.NewTimer(persistRetryDelays[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			last = ctx.Err()
+		case <-timer.C:
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if ctx.Err() != nil && errors.Is(last, context.Canceled) {
+		// 退出/取消导致落库中断：不是数据库故障，不停止认领（保留产物待恢复）。
+		s.logger.Error("落库因退出中断",
+			slog.String("task_id", key.TaskID), slog.String("stage", stage), slog.Any("err", last))
+		return last
+	}
+	s.halted.Store(true)
+	s.logger.Error("落库持续失败，停止认领（保留产物，待恢复）",
+		slog.String("task_id", key.TaskID), slog.String("stage", stage), slog.Any("err", last))
+	return last
+}
+
+// llmErrorCode 将 Summarizer 错误映射为异步错误码（详设 §9）：哨兵精确映射，
+// 未知错误归 50002（网络/上游类兜底）。
+func llmErrorCode(err error) errorcode.ErrorCode {
+	switch {
+	case errors.Is(err, ports.ErrLLMTimeout):
+		return errorcode.CodeLLMTimeout
+	case errors.Is(err, ports.ErrLLMInvalidOutput):
+		return errorcode.CodeLLMInvalidOutput
+	default:
+		return errorcode.CodeLLMUpstreamError
+	}
+}
+
+// truncateMessage 按 UTF-8 安全截断到 ≤500 字节，防溢出 task_events.error_message
+// （VARCHAR(512)，超长插入失败会拖垮整个事务③）。
+func truncateMessage(msg string) string {
+	const limit = 500
+	if len(msg) <= limit {
+		return msg
+	}
+	cut := limit
+	for cut > 0 && !isUTF8Start(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "…"
+}
+
+func isUTF8Start(b byte) bool { return b&0xC0 != 0x80 }

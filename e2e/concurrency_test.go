@@ -1,6 +1,6 @@
-// E2E-07 并发上限（测试设计 §5.2 E2E-07，T06E 当前可达成范围，golden = §5.1 形状）：
+// E2E-07 并发上限（测试设计 §5.2 E2E-07，T07 起验收至 done，golden = §5.1 形状）：
 // worker=3 时并发上传 5 个（文件名序号 i 为键，与运行顺序无关）→ 真实排队 →
-// 全部 summarizing、每任务事件链完整、无重复认领、无残留，采集进 actual 后
+// 全部 done、每任务事件链完整（4 事件）、无重复认领、无残留，采集进 actual 后
 // 与 expected/E07.json 深度比对。
 package e2e
 
@@ -79,9 +79,9 @@ func TestE2E07_Concurrency(t *testing.T) {
 		taskIDs[i] = r.resp.TaskID
 	}
 
-	// 轮询 5 个任务全部至 summarizing（期限 15s；轮询不回退检查在 pollTask 内）。
+	// 轮询 5 个任务全部至 done（期限 15s，含 LLM 段；轮询不回退检查在 pollTask 内）。
 	for _, id := range taskIDs {
-		h.pollTask(id, "summarizing", 15*time.Second)
+		h.pollTask(id, "done", 15*time.Second)
 	}
 
 	// 采集（按 i 键）：每任务终态、事件链（含 task_claimed 恰 1 条，由链长与计数共同体现）。

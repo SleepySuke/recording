@@ -1,22 +1,57 @@
 {
   "uploads": {
-    "upload-1": { "http_status": 202, "status": "pending" },
-    "upload-2": { "http_status": 202, "status": "pending" }
+    "upload-1": {
+      "http_status": 202,
+      "status": "pending"
+    },
+    "upload-2": {
+      "http_status": 202,
+      "status": "pending"
+    }
   },
   "default_page": {
     "page": 1,
     "page_size": 20,
     "total": 8,
-    "item_keys": ["upload-2", "upload-1", "seed-6", "seed-5", "seed-4", "seed-3", "seed-2", "seed-1"]
+    "item_keys": [
+      "upload-2",
+      "upload-1",
+      "seed-6",
+      "seed-5",
+      "seed-4",
+      "seed-3",
+      "seed-2",
+      "seed-1"
+    ]
   },
   "paged": [
-    { "page": 1, "item_keys": ["upload-2", "upload-1", "seed-6"] },
-    { "page": 2, "item_keys": ["seed-5", "seed-4", "seed-3"] },
-    { "page": 3, "item_keys": ["seed-2", "seed-1"] }
+    {
+      "page": 1,
+      "item_keys": [
+        "upload-2",
+        "upload-1",
+        "seed-6"
+      ]
+    },
+    {
+      "page": 2,
+      "item_keys": [
+        "seed-5",
+        "seed-4",
+        "seed-3"
+      ]
+    },
+    {
+      "page": 3,
+      "item_keys": [
+        "seed-2",
+        "seed-1"
+      ]
+    }
   ],
   "item_statuses": {
-    "upload-1": "summarizing",
-    "upload-2": "summarizing",
+    "upload-1": "done",
+    "upload-2": "done",
     "seed-1": "pending",
     "seed-2": "pending",
     "seed-3": "pending",

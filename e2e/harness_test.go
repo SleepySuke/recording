@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"gorm.io/gorm"
 
 	"recording-transcription/bootstrap"
+	"recording-transcription/internal/infrastructure/llm"
 )
 
 // 上传限额取生产默认（50MiB/53MiB/512MiB，详设 §10），驱动层不另行放宽。
@@ -32,13 +34,14 @@ const (
 	e2ePollInterval = 20 * time.Millisecond // 快轮询加速收敛，唤醒语义与生产一致
 )
 
-// e2eHarness 一台真实装配的服务：断言连接 + BaseURL + 数据/日志目录。
+// e2eHarness 一台真实装配的服务：断言连接 + BaseURL + 数据/日志目录 + LLM 替身。
 type e2eHarness struct {
 	t        *testing.T
 	DB       *gorm.DB
 	BaseURL  string
 	DataDir  string
 	LogDir   string
+	Fake     *llm.FakeLLM // 进程内假渠道（默认 normal；T08 的 E2E-03 切换挂起模式）
 	client   *http.Client
 	shutdown func() // NewServer 返回的停池函数（幂等）
 }
@@ -51,6 +54,12 @@ func newE2E(t *testing.T, mockDelay time.Duration) *e2eHarness {
 	db := requireTestDB(t)
 	dataDir := t.TempDir()
 	logDir := t.TempDir()
+
+	// 摘要段（T07）：真实 LLM 适配器指向进程内 FakeLLM（默认 normal 正常应答），
+	// 服务经 cfg.LLM* 三项与其相连——摘要链路走真实 HTTP，只替身渠道本身。
+	fake := llm.NewFake()
+	fakeSrv := httptest.NewServer(fake)
+	t.Cleanup(fakeSrv.Close)
 
 	cfg := &bootstrap.Config{
 		HTTPAddr:           "127.0.0.1:0",
@@ -69,11 +78,11 @@ func newE2E(t *testing.T, mockDelay time.Duration) *e2eHarness {
 		WorkerConcurrency:  e2eWorkers,
 		TaskPollInterval:   e2ePollInterval,
 		MockASRDelay:       mockDelay,
-		// LLM 三项占位：NewServer 当前不消费（真实适配器 T07 接入）。
-		LLMBaseURL:      "http://127.0.0.1:1",
-		LLMModel:        "placeholder-model",
-		LLMAPIKey:       "placeholder-key",
-		LLMTimeout:      60 * time.Second,
+		// LLM 指向进程内 FakeLLM（真实适配器走真实 HTTP 外呼）。
+		LLMBaseURL:      fakeSrv.URL,
+		LLMModel:        "fake-model",
+		LLMAPIKey:       "fake-key",
+		LLMTimeout:      10 * time.Second,
 		DBQueryTimeout:  3 * time.Second,
 		ShutdownTimeout: 20 * time.Second,
 		CleanupInterval: 30 * time.Second,
@@ -101,6 +110,7 @@ func newE2E(t *testing.T, mockDelay time.Duration) *e2eHarness {
 		BaseURL:  "http://" + ln.Addr().String(),
 		DataDir:  dataDir,
 		LogDir:   logDir,
+		Fake:     fake,
 		client:   &http.Client{Timeout: 10 * time.Second},
 		shutdown: shutdown,
 	}

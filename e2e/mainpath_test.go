@@ -1,7 +1,7 @@
-// E2E-01 成功主链路（测试设计 §5.2 E2E-01，T06E 当前可达成范围，golden = §5.1 形状）：
-// 上传 → 轮询 → 详情 → DB 事件链/产物 → 落盘文件 → 日志镜像 → 三表行数，采集进
-// actual 后与 expected/E01.json 深度比对。状态基准：流水线终点 summarizing；
-// T07 接入 LLM 后 golden 扩展至 done。
+// E2E-01 成功主链路（测试设计 §5.2 E2E-01，T07 扩展验收至 done，golden = §5.1 形状）：
+// 上传 → 轮询至 done → 详情（result 三字段）→ DB 事件链/summary_json → 落盘文件 →
+// 日志镜像 → 三表行数，采集进 actual 后与 expected/E01.json 深度比对。
+// LLM 段 = 真实适配器 + 进程内 FakeLLM（normal，见 harness）。
 package e2e
 
 import (
@@ -12,6 +12,13 @@ import (
 	"testing"
 	"time"
 )
+
+// resultBody 详情响应的 result 字段（仅 done 非 null，详设 §8.1）。
+type resultBody struct {
+	Summary   string   `json:"summary"`
+	KeyPoints []string `json:"key_points"`
+	Todos     []string `json:"todos"`
+}
 
 // detailBody GET /v1/recordings/:id 响应体（与 handler 实际返回一致，嵌套 task 对象）。
 type detailBody struct {
@@ -25,7 +32,8 @@ type detailBody struct {
 		Status  string `json:"status"`
 		Attempt int    `json:"attempt"`
 	} `json:"task"`
-	Transcript *string `json:"transcript"`
+	Transcript *string     `json:"transcript"`
+	Result     *resultBody `json:"result"`
 }
 
 // e01Actual E01.json 的采集形状（§5.1：HTTP 响应、事件序列、终态产物、DB 终态、
@@ -49,13 +57,15 @@ type e01Actual struct {
 			Status  string `json:"status"`
 			Attempt int    `json:"attempt"`
 		} `json:"task"`
-		Transcript string `json:"transcript"`
+		Transcript string      `json:"transcript"`
+		Result     *resultBody `json:"result"`
 	} `json:"recording_detail"`
 	TaskFinal struct {
-		Status     string `json:"status"`
-		Attempt    int    `json:"attempt"`
-		EventSeq   int64  `json:"event_seq"`
-		Transcript string `json:"transcript"`
+		Status      string      `json:"status"`
+		Attempt     int         `json:"attempt"`
+		EventSeq    int64       `json:"event_seq"`
+		Transcript  string      `json:"transcript"`
+		SummaryJSON *resultBody `json:"summary_json"`
 	} `json:"task_final"`
 	// 状态序列 = 事件链推导的完整序列（轮询序列可能漏态，仅用于不回退检查，不进 golden）。
 	StatusSequence []string `json:"status_sequence"`
@@ -81,9 +91,9 @@ func TestE2E01_MainPath(t *testing.T) {
 		t.Fatalf("上传响应缺 recording_id/task_id: %+v (status=%d)", resp, upCode)
 	}
 
-	// 轮询至 summarizing（期限 10s）；轮询可能漏掉中间态，「不回退」是唯一强断言，
+	// 轮询至 done（期限 10s，含 LLM 段）；轮询可能漏掉中间态，「不回退」是唯一强断言，
 	// 完整状态序列以事件链还原（进 golden）。
-	h.pollTask(resp.TaskID, "summarizing", 10*time.Second)
+	h.pollTask(resp.TaskID, "done", 10*time.Second)
 
 	var a e01Actual
 	a.Upload.HTTPStatus = upCode
@@ -112,15 +122,17 @@ func TestE2E01_MainPath(t *testing.T) {
 	if d.Transcript != nil {
 		a.RecordingDetail.Transcript = *d.Transcript
 	}
+	a.RecordingDetail.Result = d.Result
 
 	// DB 终态 + 事件链 + 状态序列（to_status 按 event_seq 推导）。
 	var task struct {
-		Status     string
-		Attempt    int
-		EventSeq   int64
-		Transcript string
+		Status      string
+		Attempt     int
+		EventSeq    int64
+		Transcript  string
+		SummaryJSON *string
 	}
-	if err := h.DB.Raw("SELECT status, attempt, event_seq, transcript FROM tasks WHERE id = ?",
+	if err := h.DB.Raw("SELECT status, attempt, event_seq, transcript, summary_json FROM tasks WHERE id = ?",
 		resp.TaskID).Scan(&task).Error; err != nil {
 		t.Fatalf("查询任务失败: %v", err)
 	}
@@ -128,6 +140,15 @@ func TestE2E01_MainPath(t *testing.T) {
 	a.TaskFinal.Attempt = task.Attempt
 	a.TaskFinal.EventSeq = task.EventSeq
 	a.TaskFinal.Transcript = task.Transcript
+	// summary_json 经解析后采集：MySQL JSON 列回读文本会按自身格式归一化（冒号/逗号后
+	// 加空格），采集解析结果而非原文，golden 不依赖数据库序列化格式。
+	if task.SummaryJSON != nil {
+		var rb resultBody
+		if err := json.Unmarshal([]byte(*task.SummaryJSON), &rb); err != nil {
+			t.Fatalf("summary_json 不可解析: %v, raw=%q", err, *task.SummaryJSON)
+		}
+		a.TaskFinal.SummaryJSON = &rb
+	}
 
 	a.Events = h.taskEventChain(resp.TaskID)
 	for _, e := range a.Events {
@@ -146,7 +167,7 @@ func TestE2E01_MainPath(t *testing.T) {
 	}
 
 	// 日志镜像事件名序列（与 DB 事件链同序）。
-	a.MirrorEvents = h.mirroredEvents(resp.TaskID, 3)
+	a.MirrorEvents = h.mirroredEvents(resp.TaskID, 4)
 
 	a.TableCounts = h.tableCounts()
 

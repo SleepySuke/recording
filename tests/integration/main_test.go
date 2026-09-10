@@ -1,17 +1,82 @@
-// Package integration 提供数据库集成测试基建：测试库红线守卫 + 每用例清表（测试设计 §2）。
+// Package integration 提供数据库集成测试基建：测试库红线守卫 + 每用例清表（测试设计 §2）；
+// 与 e2e 共用同一测试库，整包持有 MySQL 咨询锁互斥（见 TestMain）。
 package integration
 
 import (
+	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 
 	"recording-transcription/internal/infrastructure/persistence/mysql"
 )
+
+// suiteLockName 包级互斥锁名：tests/integration 与 e2e 共用 recording_test 库，
+// go test 多包并行时两包的「每用例 TRUNCATE 三表」会互相清空对方在途数据。
+// 两包用同名 MySQL 咨询锁整包串行化；单实例/单测试库场景足够，不同 DSN 被一并
+// 串行化也无害（安全侧）。
+const suiteLockName = "recording_test_suite"
+
+// TestMain 跑任何用例前取整包咨询锁，m.Run() 结束后释放——锁挂在专用连接上整包
+// 持有，不能复用用例的 gorm 连接（用例结束即关闭释放，挡不住下一用例/另一包）。
+// 未配置 TEST_MYSQL_DSN 时用例各自 t.Skip，无需互斥。
+func TestMain(m *testing.M) {
+	release, err := acquireSuiteLock()
+	if err != nil {
+		os.Stderr.WriteString("获取测试库包级互斥锁失败: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	code := m.Run()
+	release()
+	os.Exit(code)
+}
+
+// acquireSuiteLock 打开专用连接执行 GET_LOCK（等待 300s，覆盖对方整包耗时，
+// 集成包 ~10s 量级）；返回释放函数。GET_LOCK 为会话级锁，连接整包持有即整包互斥。
+func acquireSuiteLock() (func(), error) {
+	dsn := os.Getenv("TEST_MYSQL_DSN")
+	if dsn == "" {
+		return func() {}, nil
+	}
+	if !strings.Contains(dsn, "test") {
+		return nil, errors.New(`测试库红线：TEST_MYSQL_DSN 必须指向 test 库，当前 DSN 不含 "test"`)
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("打开锁连接失败: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 310*time.Second)
+	defer cancel()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("获取锁连接失败: %w", err)
+	}
+	var got int
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 300)", suiteLockName).Scan(&got); err != nil {
+		_ = conn.Close()
+		_ = db.Close()
+		return nil, fmt.Errorf("执行 GET_LOCK 失败: %w", err)
+	}
+	if got != 1 {
+		_ = conn.Close()
+		_ = db.Close()
+		return nil, fmt.Errorf("GET_LOCK(%q, 300) 未取得（返回 %d：另一测试包仍在运行或锁被占用）", suiteLockName, got)
+	}
+	return func() {
+		_, _ = conn.ExecContext(context.Background(), "SELECT RELEASE_LOCK(?)", suiteLockName)
+		_ = conn.Close()
+		_ = db.Close()
+	}, nil
+}
 
 // migrationsDir 迁移文件目录（测试从 tests/integration 运行，相对仓库根）。
 const migrationsDir = "../../migrations"
