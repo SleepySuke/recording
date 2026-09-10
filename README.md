@@ -177,15 +177,12 @@ make start    # 环境自检 → 起 app+db 容器 → 等待 /readyz 就绪
 
 ## 已知缺口与不足
 
-- **真实渠道联调验证待 API Key**：服务本身真实接入 LLM（OpenAI 兼容适配器，标准 chat/completions + Bearer）。自动化测试不调真实 LLM 是设计决定而非缺口——LLM 输出概率性、不可预测，测试统一用确定性 FakeLLM 替身，超时 / 非法输出 / 上游错误的分类已全由替身覆盖；走查中占位 Key 已实测错误路径（HTTP 401 → failed/50002，响应不含 Key 与堆栈）。拿到 Key 填入 `.env` 即可补真实渠道联调（清单见测试设计附录 A）。
 - **单实例边界**：仅支持一个应用实例；多实例需先做任务租约与共享文件存储。
-- **reset 恢复会重做在途任务**：默认 `RECOVERY_MODE=reset` 将中断的 transcribing/summarizing 任务重置重做，LLM 可能重复调用；12h interrupt 降级模式（在途任务标 failed/30003 等手动重试）已实现，默认关闭。
+- **reset 恢复会重做在途任务**：默认 `RECOVERY_MODE=reset` 将中断的 transcribing/summarizing 任务重置重做，LLM 可能重复调用
 - **无上传幂等**：`content_hash` 已落库，但哈希去重未实现；上传响应丢失时重复上传会产生重复录音。
 - **无失败自动重试**：失败后需手动 `POST /retry`（手动重试已交付）；自动重试 + 指数退避为候选增强。
 - **生产 Mock 失败种子只看 task_id**：重试不复掷，默认模式下撞上失败种子的任务重试也会失败（演示重试请用 `MOCK_ASR_FAIL_FIRST`）。
 - **公网部署未做**：无鉴权与 TLS，SSE 流式摘要与前端正式实现不在范围（`/ui` 仅为开发辅助）。
-- **make lint 降级**：未安装 golangci-lint 时跳过该项，仅执行 go vet + gofmt。
-- **国内网络默认源**：Dockerfile 默认 `GOPROXY=goproxy.cn`、基础镜像可经 `GO_IMAGE` / `RUNTIME_IMAGE` build-args 换加速源，均可用 build-arg 覆盖。
 
 ## 文档索引
 
