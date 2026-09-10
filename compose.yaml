@@ -1,7 +1,6 @@
-# T01 阶段仅含 db 依赖服务；app 服务在 T12 补齐（架构 §6 部署拓扑）。
+# 部署拓扑（架构 §6）：app + db 两服务，自包含交付——clone 后 make setup && make start 即就绪。
 # 本机已有共享 MySQL 实例（dataforge-mysql，宿主 3306）时，日常开发可不起本服务：
-# DSN 直连共享实例并自建 recording / recording_test 库（见 .env.example 方式 A）。
-# 本服务用于仓库自包含交付（T12）：clone 后 compose up 即有独立 MySQL，不依赖外部实例。
+# DSN 直连共享实例并自建 recording / recording_test 库（见 .env.example），make dev 走该方式。
 services:
   db:
     # 复用本机已有 mysql:8.0 镜像，避免重复拉取（2026-09-09 本机决策）；
@@ -26,5 +25,43 @@ services:
       retries: 20
       start_period: 30s
 
+  app:
+    # 基础镜像名经 GO_IMAGE/RUNTIME_IMAGE 可覆盖（docker.io 直连受限网络的镜像加速前缀，
+    # 默认官方名；compose 自动从 .env 读同名变量）。
+    build:
+      context: .
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.23-alpine}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.20}
+    # 启动顺序（架构 §6）：db 健康检查通过 → app 迁移/启动恢复 → /readyz 就绪；
+    # app 自身失败（迁移/恢复）非零退出，交 restart 策略重试。
+    depends_on:
+      db:
+        condition: service_healthy
+    # 其余配置（LLM、上传、worker 等）整体继承 .env；仅 DSN 必须改写：
+    # 容器内经 compose 网络连服务名 db:3306（容器内端口恒 3306，与宿主 MYSQL_PORT 无关），
+    # 不能沿用 .env 里面向宿主的 127.0.0.1 DSN。
+    env_file: .env
+    environment:
+      MYSQL_DSN: ${MYSQL_USER:-recording}:${MYSQL_PASSWORD:?请在 .env 设置}@tcp(db:3306)/${MYSQL_DATABASE:-recording}?parseTime=true&loc=UTC
+      DATA_DIR: /app/data/recordings
+      LOG_DIR: /app/logs
+    ports:
+      - "8080:8080"
+    volumes:
+      # 录音字节持久化卷 + 日志绑定宿主（容器重建后数据仍在，架构 §6）
+      - recordings-data:/app/data/recordings
+      - ./logs:/app/logs
+    healthcheck:
+      # 打 /readyz 而非 /healthz：迁移 + 启动恢复完成才就绪（详设 §6.2）；
+      # 在容器内执行，走自身 8080；alpine 自带 busybox wget，无需额外装 curl。
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   mysql-data:
+  recordings-data:

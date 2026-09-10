@@ -1,0 +1,12 @@
+# 构建上下文只留源码与 go.mod/go.sum/migrations（见 Dockerfile COPY . .）；
+# .env 绝不进镜像（密钥），运行期经 compose env_file 注入。
+.git
+.env
+.superpowers/
+bin/
+data/
+docs/
+e2e/
+logs/
+tests/
+.DS_Store
