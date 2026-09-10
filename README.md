@@ -122,8 +122,8 @@ jq -c 'select(.task_id == "task-example")' logs/app.jsonl
 | `make dev` | 本地开发启动：自动先执行 `make check`；只以 Compose 起 db 依赖（已在运行则直接复用），应用直接 `go run` 连本地环境，日志输出终端，便于断点与快速迭代；不构建应用镜像 |
 | `make down` | 停止并移除容器（适用 `start` 与 `dev` 两种方式）；保留数据卷与 `./logs` |
 | `make logs` | 跟踪应用与数据库日志 |
-| `make test` | 全量测试：单元 + 集成（需 `TEST_MYSQL_DSN`，未设则跳过集成）+ E2E（自动临时起栈、结束清理）；并发相关包附带 `-race` |
-| `make e2e` | 仅端到端：临时起栈 → 驱动 E2E 用例 → 真实结果与预期 golden 逐字段比对 → 自动清理（机制见[测试设计](docs/design/test-design.md)） |
+| `make test` | 全量测试：单元恒跑；集成与 E2E golden 需 `TEST_MYSQL_DSN`（未设则逐层跳过并提示）；并发相关包附带 `-race` |
+| `make e2e` | 仅 E2E golden 过程级套件（需 `TEST_MYSQL_DSN`，未设则跳过并提示）；另设 `E2E_COMPOSE=1` 时附带 compose 全栈冒烟 E-COMPOSE（需 Docker 与 `make build` 镜像，栈复用不 down；机制见[测试设计](docs/design/test-design.md)） |
 | `make lint` | `go vet` 与 golangci-lint |
 | `make clean` | 清理构建产物与本地 `logs/`；不动数据卷 |
 

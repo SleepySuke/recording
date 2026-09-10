@@ -1,0 +1,78 @@
+{
+  "upload": {
+    "http_status": 202,
+    "recording_id": "<recording_id>",
+    "task_id": "<task_id>",
+    "status": "pending"
+  },
+  "recording_detail": {
+    "http_status": 200,
+    "id": "<recording_id>",
+    "original_filename": "e-compose-meeting.wav",
+    "extension": "wav",
+    "size_bytes": 8192,
+    "created_at": "<ts>",
+    "task": {
+      "id": "<task_id>",
+      "status": "done",
+      "attempt": 1
+    },
+    "transcript": "[mock-asr] transcript for task <task_id> (seed=<seed>)",
+    "result": {
+      "summary": "确定性摘要：转写流水线已完成收尾",
+      "key_points": ["完成 LLM 摘要接入", "验证完成与失败事务原子提交"],
+      "todos": []
+    }
+  },
+  "task_final": {
+    "status": "done",
+    "attempt": 1,
+    "event_seq": 4,
+    "transcript": "[mock-asr] transcript for task <task_id> (seed=<seed>)",
+    "summary_json": {
+      "summary": "确定性摘要：转写流水线已完成收尾",
+      "key_points": ["完成 LLM 摘要接入", "验证完成与失败事务原子提交"],
+      "todos": []
+    }
+  },
+  "status_sequence": ["pending", "transcribing", "summarizing", "done"],
+  "events": [
+    {
+      "event_seq": 1,
+      "event": "task_created",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": null,
+      "to_status": "pending"
+    },
+    {
+      "event_seq": 2,
+      "event": "task_claimed",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": "pending",
+      "to_status": "transcribing"
+    },
+    {
+      "event_seq": 3,
+      "event": "transcription_completed",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": "transcribing",
+      "to_status": "summarizing"
+    },
+    {
+      "event_seq": 4,
+      "event": "task_completed",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": "summarizing",
+      "to_status": "done"
+    }
+  ],
+  "storage_file": {
+    "exists": true,
+    "size_bytes": 8192
+  },
+  "mirror_events": ["task_created", "task_claimed", "transcription_completed", "task_completed"]
+}

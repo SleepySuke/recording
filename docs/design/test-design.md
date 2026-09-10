@@ -24,7 +24,7 @@ flowchart TB
 | 集成（MySQL） | GORM 适配器、事务协议、认领/重试/删除/恢复 | 隔离 MySQL 测试库 | 真实 MySQL | `make test`（需 TEST_MYSQL_DSN） |
 | 集成（HTTP+流水线） | 六接口、错误映射、worker 流水线、LLM 边界 | httptest + 测试库 | 确定性 Transcriber + 假 LLM | 同上 |
 | E2E（过程级） | 已交付功能的端到端验收（真实装配 + 真实 TCP/HTTP 驱动 + golden 深度比对） | `bootstrap.NewServer` 进程内真实装配 + 测试库 + 真实 TCP 监听 | DeterministicTranscriber（经 `MOCK_ASR_DELAY`/`Config.MockASRDelay` 注入） | `TEST_MYSQL_DSN=… go test ./e2e/`（`make test` 同样触发） |
-| E2E（compose golden） | 完整用户旅程与故障演练 | docker compose 全栈 | Mock ASR 按种子注入、LLM 指向本地桩 | `make e2e` 单独执行（T12 接入）；亦包含于 `make test` 全量（需 Docker） |
+| E2E（compose golden） | 完整用户旅程冒烟（E-COMPOSE 单例：上传→done→详情→事件链→卷内文件→日志镜像；T13 范围收窄，不重驱全量） | docker compose 全栈（`make build` 镜像 + 发布端口） | Mock ASR 确定性替身（`MOCK_ASR_DELAY` 注入）、LLM 指向宿主 FakeLLM（`host.docker.internal`） | `E2E_COMPOSE=1 TEST_MYSQL_DSN=… go test ./e2e/ -run TestE2ECompose`（需 Docker；未设 `E2E_COMPOSE` 自动跳过，故 `make e2e`/`make test` 不要求 Docker） |
 
 真实 LLM 渠道**不进自动化**：成本与稳定性都不适合，单独人工验收（附录 A）。
 
@@ -79,7 +79,7 @@ flowchart TB
 E2E 分两级，共用同一套 golden 比对机制（§5.1）与结果目录（§5.3），只换驱动层：
 
 1. **过程级（`e2e/` 包，T06E 建立）**：每个任务交付时随任务落地对应用例——经 `bootstrap.NewServer` 真实装配（迁移、日志双写、本地文件存储、worker 池），真实 TCP 监听 + 真实 `http.Client` 驱动，采集 HTTP 响应、DB 事件链、终态产物、落盘文件与日志镜像，与 `e2e/expected/<case>.json` 深度比对（§5.1）；转写替身经 `MOCK_ASR_DELAY` / `Config.MockASRDelay` 注入（未设置 = 生产 Mock；≥0 = 确定性替身固定延迟）。
-2. **compose 全栈驱动（T13 升级）**：compose 起真实服务替换进程内驱动层，复用同一套 `expected/*.json` golden 跑全量比对，只换驱动、不换预期。
+2. **compose 全栈冒烟（T13 落地，范围收窄）**：八个用例的深度验收由过程级套件随任务逐个交付（见 §5.0 映射表），compose 层不重驱全量，只交付一条完整用户旅程的单例 golden **E-COMPOSE**（`e2e/compose_smoke_test.go`，`E2E_COMPOSE=1` 显式触发）：`make build` 镜像 + compose 起栈，宿主经发布端口驱动真实容器；替身经临时 compose override 注入（`LLM_BASE_URL` → 宿主 FakeLLM、`MOCK_ASR_DELAY` 确定性转写），直连 compose 应用库采集事件链（应用库非测试库：不 TRUNCATE、不做全表断言，只比该任务自身链）；结束时栈复原为 .env 常规配置并保持运行。
 
 ### 5.0 任务→用例映射（随任务推进维护）
 
@@ -89,14 +89,14 @@ E2E 分两级，共用同一套 golden 比对机制（§5.1）与结果目录（
 | T07 | E2E-01 扩展验收至 done + LLM 边界注入 | 已落地（T07，e2e/mainpath_test.go + IT-14）|
 | T08 | E2E-02 / E2E-03 / E2E-04 | 已落地（T08，e2e/retry_test.go）|
 | T09 | E2E-05 | 已落地（T09，e2e/delete_test.go）|
-| T11 | E2E-06 | 待做 |
-| T12 | 接入 `make e2e` | 待做 |
-| T13 | compose 驱动全量比对（复用同一套 expected golden） | 待做 |
+| T11 | E2E-06 | 已落地（T11，e2e/restart_test.go） |
+| T12 | 接入 `make e2e` | 已落地（T13 接线：`make e2e` = 过程级 golden，无 DSN 自动跳过并说明） |
+| T13 | compose 全栈 golden 冒烟 E-COMPOSE（单例，非全量重驱——深度验收在过程级） | 已落地（T13，e2e/compose_smoke_test.go + expected/E-COMPOSE.json） |
 
 ### 5.1 比对机制（golden 模式）
 
 1. **预期结果先行构造**：按设计契约 + 确定性种子，为每个场景预先写好 golden 文件 `e2e/expected/<case>.json`，内容包括：HTTP 响应（状态码、业务码、status/attempt 字段）、任务状态序列、事件序列（event + attempt + error_code，按 event_seq）、终态产物（transcript、summary）、数据库终态断言（三表行数、字段）。
-2. **真实结果采集**：驱动完整流程（过程级 = `e2e/` 包真实装配；compose 级 = `make e2e` 起全栈服务），轮询 API + 直连测试库 + 过滤 logs/app.jsonl，产出 `e2e/actual/<case>.json`；忽略清单以占位符掩码归一化实现（真实 ID → `<task_id>` 等占位符、含 transcript 内嵌 ID 与 seed 数值，时间戳 → `<ts>`，耗时 → `<duration>`），多任务用例以可控键（序号）组织、与运行顺序无关。
+2. **真实结果采集**：驱动完整流程（过程级 = `e2e/` 包真实装配；compose 级 = E-COMPOSE 冒烟经发布端口驱动真实容器），轮询 API + 直连测试库 + 过滤 logs/app.jsonl，产出 `e2e/actual/<case>.json`；忽略清单以占位符掩码归一化实现（真实 ID → `<task_id>` 等占位符、含 transcript 内嵌 ID 与 seed 数值，时间戳 → `<ts>`，耗时 → `<duration>`），多任务用例以可控键（序号）组织、与运行顺序无关。
 3. **深度比对**：逐字段相等才算通过；ID、时间戳、耗时字段列入忽略清单，顺序性字段（状态序列、事件序列）按序严格比对；不一致输出 diff 并保留现场（容器日志 + 数据卷）。
 
 ### 5.2 E2E 用例
@@ -123,9 +123,9 @@ e2e/
 
 ## 6. 通过标准
 
-- `make test` 全绿（单元 + 集成 + E2E；环境缺失的层自动跳过并在输出中说明）；并发相关包在环境支持时 `-race` 通过；`make lint` 无告警。
-- `make e2e`：全部用例 actual 与 expected 深度相等。
-- 不变量巡检自动执行：测试库中不出现孤儿任务、无重复 (task_id, event_seq)、无半删除状态。
+- `make test` 全绿（单元恒跑；集成与 E2E golden 需 TEST_MYSQL_DSN，未设的层自动跳过并在输出中说明）；并发相关包在环境支持时 `-race` 通过；`make lint` 无告警。
+- `make e2e`：全部过程级用例 actual 与 expected 深度相等（无 DSN 自动跳过并说明）；另设 `E2E_COMPOSE=1` 时 E-COMPOSE 容器冒烟同样深度相等（无需 Docker 的常规套件自动跳过该冒烟）。
+- 不变量巡检自动执行：过程级测试库中不出现孤儿任务、无重复 (task_id, event_seq)、无半删除状态；E-COMPOSE 冒烟在 compose 应用库内将巡检范围限定为本任务自身行（真实应用数据不 TRUNCATE、不做全表断言）。
 - 真实 LLM 人工验收完成后，在 README 记录脱敏的命令与响应样例。
 
 ## 附录 A：真实 LLM 人工验收清单（不进自动化）

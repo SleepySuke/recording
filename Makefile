@@ -10,7 +10,7 @@ GO := GOTOOLCHAIN=local go
 READYZ_URL := http://localhost:8080/readyz
 
 .DEFAULT_GOAL := help
-.PHONY: help check setup build start dev down logs test lint clean
+.PHONY: help check setup build start dev down logs e2e test lint clean
 
 help: ## 显示所有可用目标
 	@awk -F':.*## ' '/^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -85,14 +85,21 @@ down: ## 停止并移除容器（start 与 dev 通用）；保留数据卷与 ./
 logs: ## 跟踪 app 与 db 容器日志（Ctrl-C 退出）
 	$(COMPOSE) logs -f app db
 
-test: ## 单元恒跑；集成需 TEST_MYSQL_DSN（未设则跳过并提示）
+e2e: ## E2E golden（过程级套件，需 TEST_MYSQL_DSN，未设则跳过并提示；另设 E2E_COMPOSE=1 附带 compose 全栈冒烟 E-COMPOSE）
+	@if [ -n "$$TEST_MYSQL_DSN" ]; then \
+		$(GO) test ./e2e/ -race -count=1; \
+	else \
+		printf 'TEST_MYSQL_DSN 未设置，跳过 E2E golden 测试（DSN 示例见 .env.example 注释；compose 冒烟另需 E2E_COMPOSE=1）\n'; \
+	fi
+
+test: ## 单元恒跑；集成与 E2E golden 需 TEST_MYSQL_DSN（未设则逐层跳过并提示）
 	$(GO) test ./tests/unit/ -race -count=1
 	@if [ -n "$$TEST_MYSQL_DSN" ]; then \
 		$(GO) test ./tests/integration/ -race -count=1; \
 	else \
 		printf 'TEST_MYSQL_DSN 未设置，跳过集成测试（DSN 示例见 .env.example 注释）\n'; \
 	fi
-	# E2E（make e2e：compose 临时起栈 + golden 逐字段比对）由 T13 接入，此处不重复起栈。
+	@$(MAKE) --no-print-directory e2e
 
 lint: ## go vet + gofmt；装有 golangci-lint 则一并执行，未装则一行提示后跳过
 	$(GO) vet ./...
