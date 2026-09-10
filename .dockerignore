@@ -1,4 +1,5 @@
-# 构建上下文只留源码与 go.mod/go.sum/migrations（见 Dockerfile COPY . .）；
+# 构建上下文只留源码与 go.mod/go.sum/migrations/static（见 Dockerfile COPY . .；
+# static/ 为 /ui 联调页，须随镜像交付，不可排除）；
 # .env 绝不进镜像（密钥），运行期经 compose env_file 注入。
 .git
 .env

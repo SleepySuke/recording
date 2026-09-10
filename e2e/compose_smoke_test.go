@@ -134,7 +134,7 @@ services:
 	t.Cleanup(func() {
 		out, err := tryCmd(3*time.Minute, "docker", "compose", "-f", "compose.yaml", "up", "-d", "--wait")
 		if err != nil {
-			t.Logf("复原 compose 常规配置未成功（栈未复原；可 make down && make start 重置）: %v\n%s", err, out)
+			t.Errorf("复原 compose 常规配置未成功（栈未复原；可 make down && make start 重置）: %v\n%s", err, out)
 			return
 		}
 		t.Log("compose 栈已复原为 .env 常规配置并保持运行（用户约定：容器复用，不 down）")
@@ -225,7 +225,7 @@ services:
 		}
 		if tb.Status == "failed" {
 			logOut, _ := tryCmd(15*time.Second, "docker", comp("logs", "app", "--tail", "30")...)
-			t.Fatalf("任务进入 failed（当前 %s）：摘要/转写外呼失败——检查容器 → 宿主 FakeLLM 可达性与 make build 镜像新旧\n--- app 日志尾部 ---\n%s", fakeHost, logOut)
+			t.Fatalf("任务进入 failed（当前 %s）：摘要/转写外呼失败——检查容器 → 宿主 FakeLLM 可达性与 make build 镜像新旧\n--- app 日志尾部 ---\n%s", lastStatus, logOut)
 		}
 		if time.Now().After(pollDeadline) {
 			t.Fatalf("任务 %s 未在 90s 内到达 done，最后状态 = %s", resp.TaskID, lastStatus)

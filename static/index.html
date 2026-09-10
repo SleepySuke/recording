@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<!-- 联调页（T14）：开发辅助，需求不考察前端——单文件、无框架、原生 JS、同源直连（避免 CORS）。
+     覆盖六个接口：上传 / 任务轮询 / 列表 / 详情 / 重试 / 删除。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>录音转写服务 · 联调页</title>
+<style>
+  body { font: 14px/1.6 -apple-system, "PingFang SC", sans-serif; margin: 0 auto; max-width: 860px; padding: 16px; color: #222; background: #fafafa; }
+  h1 { font-size: 20px; } h2 { font-size: 16px; margin: 0 0 8px; }
+  section { background: #fff; border: 1px solid #e5e5e5; border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+  input[type=text], input[type=number], input[type=file] { border: 1px solid #ccc; border-radius: 4px; padding: 4px 6px; }
+  button { border: 1px solid #1a66d8; background: #1a66d8; color: #fff; border-radius: 4px; padding: 4px 12px; cursor: pointer; }
+  button.warn { border-color: #c0392b; background: #c0392b; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { margin: 6px 0; } .muted { color: #888; } .mono { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; } th, td { border: 1px solid #eee; padding: 4px 8px; text-align: left; }
+  .bar { height: 8px; background: #eee; border-radius: 4px; overflow: hidden; margin-top: 6px; } .bar > i { display: block; height: 100%; width: 0; background: #1a66d8; }
+  .badge { display: inline-block; padding: 0 8px; border-radius: 10px; color: #fff; font-size: 12px; }
+  .s-pending{background:#888}.s-transcribing{background:#d98a00}.s-summarizing{background:#7d3ca3}.s-done{background:#2e8b57}.s-failed{background:#c0392b}.s-deleting{background:#555}
+  pre { background: #f4f4f4; padding: 8px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; }
+  ul.keypts { margin: 4px 0; padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>录音转写服务 · 联调页</h1>
+<p class="muted">开发联调辅助页面（同源直连，无框架）。接口调试另见 <span class="mono">api/recordings.http</span>。</p>
+
+<section>
+  <h2>1. 上传音频（POST /v1/recordings）</h2>
+  <div class="row"><input type="file" id="upFile" accept=".wav,.mp3,.m4a,.aac"> <button id="upBtn">上传</button></div>
+  <div class="bar"><i id="upBar"></i></div>
+  <pre id="upOut" class="muted">选择文件后点击上传（wav/mp3/m4a/aac，≤50MiB）。上传成功后自动开始任务轮询。</pre>
+</section>
+
+<section>
+  <h2>2. 任务状态轮询（GET /v1/tasks/{task_id}）</h2>
+  <div class="row"><input type="text" id="taskId" placeholder="task_id" size="40"> <button id="pollBtn">开始轮询</button> <button id="stopPollBtn" disabled>停止</button></div>
+  <div class="row" id="taskInfo" class="muted">每秒查询一次，展示 status / attempt 阶段变化；done 后自动拉取转写与摘要，failed 后可重试。</div>
+  <div class="row"><button id="retryBtn" class="warn" style="display:none">重试该任务（POST /v1/tasks/{task_id}/retry）</button></div>
+  <div id="taskResult"></div>
+</section>
+
+<section>
+  <h2>3. 录音列表（GET /v1/recordings）</h2>
+  <div class="row">第 <input type="number" id="page" value="1" min="1" style="width:64px"> 页，每页 <input type="number" id="pageSize" value="10" min="1" max="100" style="width:64px"> 条 <button id="listBtn">查询</button> <span id="listMeta" class="muted"></span></div>
+  <div id="listBox"></div>
+</section>
+
+<section>
+  <h2>4. 录音详情（GET /v1/recordings/{recording_id}）</h2>
+  <div class="row"><input type="text" id="recId" placeholder="recording_id" size="40"> <button id="detailBtn">查看</button> <button id="delBtn" class="warn">删除（DELETE）</button></div>
+  <div id="detailBox" class="muted">展示元数据、任务状态、转写文本与结构化摘要。</div>
+</section>
+
+<script>
+"use strict";
+// 接口状态 → 中文标签与样式徽章
+var STATUS_LABEL = { pending: "等待中", transcribing: "转写中", summarizing: "摘要中", done: "已完成", failed: "已失败", deleting: "删除中" };
+function badge(status) {
+  return '<span class="badge s-' + status + '">' + (STATUS_LABEL[status] || status) + "</span>";
+}
+function fmtErr(payload) { // 统一错误体 {error:{code,message}}
+  var e = payload && payload.error;
+  return e ? "错误 " + e.code + "：" + e.message : JSON.stringify(payload);
+}
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+function $(id) { return document.getElementById(id); }
+function renderResult(r) { // 摘要三字段：summary / key_points / todos
+  if (!r) return '<p class="muted">（无摘要结果）</p>';
+  var h = "<p><b>摘要：</b>" + esc(r.summary) + "</p>";
+  if (r.key_points && r.key_points.length) h += '<b>要点：</b><ul class="keypts">' + r.key_points.map(function (k) { return "<li>" + esc(k) + "</li>"; }).join("") + "</ul>";
+  if (r.todos && r.todos.length) h += '<b>待办：</b><ul class="keypts">' + r.todos.map(function (k) { return "<li>" + esc(k) + "</li>"; }).join("") + "</ul>";
+  return h;
+}
+
+// ---- 1. 上传：XHR 以支持上传进度事件 ----
+var lastTaskId = "", lastRecId = "";
+$("upBtn").onclick = function () {
+  var f = $("upFile").files[0];
+  if (!f) { $("upOut").textContent = "请先选择文件。"; return; }
+  var fd = new FormData(); fd.append("file", f);
+  var xhr = new XMLHttpRequest();
+  xhr.open("POST", "/v1/recordings");
+  xhr.upload.onprogress = function (e) { if (e.lengthComputable) $("upBar").style.width = Math.round(e.loaded / e.total * 100) + "%"; };
+  xhr.onload = function () {
+    var body;
+    try { body = JSON.parse(xhr.responseText); } catch (e) { body = xhr.responseText; }
+    if (xhr.status === 202) {
+      lastTaskId = body.task_id; lastRecId = body.recording_id;
+      $("upOut").innerHTML = "202 已受理：" + badge(body.status) + '<br>recording_id：<span class="mono">' + esc(body.recording_id) + '</span><br>task_id：<span class="mono">' + esc(body.task_id) + "</span>";
+      $("taskId").value = lastTaskId; $("recId").value = lastRecId;
+      startPolling();
+    } else {
+      $("upOut").textContent = "HTTP " + xhr.status + "：" + fmtErr(body);
+    }
+  };
+  xhr.onerror = function () { $("upOut").textContent = "上传请求失败（网络错误）。"; };
+  $("upBar").style.width = "0"; $("upOut").textContent = "上传中…";
+  xhr.send(fd);
+};
+
+// ---- 2. 任务轮询：每秒 GET，记录 status/attempt 变化；终态自动拉详情 ----
+var pollTimer = null, lastStatus = null, lastAttempt = null;
+function startPolling() { stopPolling(); $("pollBtn").disabled = true; $("stopPollBtn").disabled = false; pollTick(); pollTimer = setInterval(pollTick, 1000); }
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } $("pollBtn").disabled = false; $("stopPollBtn").disabled = true; }
+$("pollBtn").onclick = function () { if ($("taskId").value.trim()) { lastStatus = null; $("taskInfo").textContent = ""; startPolling(); } };
+$("stopPollBtn").onclick = stopPolling;
+function pollTick() {
+  var id = $("taskId").value.trim();
+  if (!id) return;
+  fetch("/v1/tasks/" + encodeURIComponent(id)).then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }); }).then(function (res) {
+    if (res.code !== 200) { $("taskInfo").textContent = "HTTP " + res.code + "：" + fmtErr(res.body); stopPolling(); return; }
+    var t = res.body, changed = t.status !== lastStatus || t.attempt !== lastAttempt;
+    if (changed) {
+      var line = badge(t.status) + " attempt=" + t.attempt + (t.error ? "（错误 " + t.error.code + "：" + esc(t.error.message) + "）" : "");
+      $("taskInfo").innerHTML = ($("taskInfo").dataset.hist || "") + "<div>" + new Date().toLocaleTimeString() + " · " + line + "</div>";
+      $("taskInfo").dataset.hist = $("taskInfo").innerHTML;
+      lastStatus = t.status; lastAttempt = t.attempt;
+    }
+    $("retryBtn").style.display = t.status === "failed" ? "" : "none";
+    if (t.status === "done") { stopPolling(); loadDetail(t.recording_id, $("taskResult")); }
+    if (t.status === "failed" && t.recording_id) { $("recId").value = t.recording_id; }
+  }).catch(function (e) { $("taskInfo").textContent = "轮询请求失败：" + e; stopPolling(); });
+}
+$("retryBtn").onclick = function () { // 仅 failed 任务可重试，其余返回 409
+  var id = $("taskId").value.trim();
+  fetch("/v1/tasks/" + encodeURIComponent(id) + "/retry", { method: "POST" }).then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }); }).then(function (res) {
+    $("taskResult").innerHTML = res.code === 202
+      ? "重试已受理：" + badge(res.body.status) + "（attempt=" + res.body.attempt + "，继续轮询观察）"
+      : "重试被拒绝 HTTP " + res.code + "：" + fmtErr(res.body);
+    if (res.code === 202) { lastStatus = null; startPolling(); }
+  });
+};
+
+// ---- 3. 列表（分页）----
+$("listBtn").onclick = loadList;
+function loadList() {
+  var q = "?page=" + encodeURIComponent($("page").value || 1) + "&page_size=" + encodeURIComponent($("pageSize").value || 20);
+  fetch("/v1/recordings" + q).then(function (r) { return r.json(); }).then(function (body) {
+    $("listMeta").textContent = "共 " + body.total + " 条（第 " + body.page + " 页 / 每页 " + body.page_size + "）";
+    $("listBox").innerHTML = '<table><tr><th>文件名</th><th>大小</th><th>状态</th><th>task_id</th><th>创建时间</th><th></th></tr>' +
+      body.items.map(function (it) {
+        return "<tr><td>" + esc(it.original_filename) + '</td><td>' + it.size_bytes + "</td><td>" + badge(it.status) +
+          '</td><td class="mono">' + esc(it.task_id) + '</td><td class="muted">' + it.created_at + '</td>' +
+          '<td><button onclick="viewRec(\'' + it.id + '\')">详情</button> <button class="warn" onclick="delRec(\'' + it.id + '\')">删除</button></td></tr>';
+      }).join("") + "</table>";
+  }).catch(function (e) { $("listMeta").textContent = "列表请求失败：" + e; });
+}
+function viewRec(id) { $("recId").value = id; loadDetail(id, $("detailBox")); }
+window.viewRec = viewRec;
+function delRec(id) { if (!confirm("确认删除录音及其文件与关联数据？不可恢复。")) return; delById(id, $("listMeta")); }
+window.delRec = delRec;
+
+// ---- 4. 详情与删除 ----
+$("detailBtn").onclick = function () { var id = $("recId").value.trim(); if (id) loadDetail(id, $("detailBox")); };
+function loadDetail(id, box) {
+  fetch("/v1/recordings/" + encodeURIComponent(id)).then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }); }).then(function (res) {
+    if (res.code !== 200) { box.textContent = "HTTP " + res.code + "：" + fmtErr(res.body); return; }
+    var d = res.body;
+    box.innerHTML = "<p><b>" + esc(d.original_filename) + "</b>（." + esc(d.extension) + "，" + d.size_bytes + " 字节，创建于 " + d.created_at + "）</p>" +
+      "<p>任务 " + badge(d.task.status) + " · attempt=" + d.task.attempt + (d.task.error ? " · 错误 " + d.task.error.code + "：" + esc(d.task.error.message) : "") + "</p>" +
+      "<p><b>转写文本：</b></p><pre>" + esc(d.transcript || "（暂无——转写完成后写入）") + "</pre>" +
+      "<p><b>结构化摘要：</b></p>" + renderResult(d.result);
+  }).catch(function (e) { box.textContent = "详情请求失败：" + e; });
+}
+$("delBtn").onclick = function () { var id = $("recId").value.trim(); if (id && confirm("确认删除录音及其文件与关联数据？不可恢复。")) delById(id, $("detailBox")); };
+function delById(id, box) { // 204 成功；软删除先标记 deleting、后台清理文件
+  fetch("/v1/recordings/" + encodeURIComponent(id), { method: "DELETE" }).then(function (r) {
+    if (r.status === 204) { box.innerHTML = "已受理删除（204），文件由后台清理循环移除。"; loadList(); }
+    else r.json().then(function (b) { box.textContent = "HTTP " + r.status + "：" + fmtErr(b); });
+  }).catch(function (e) { box.textContent = "删除请求失败：" + e; });
+}
+
+loadList(); // 打开页面即拉一次列表
+</script>
+</body>
+</html>

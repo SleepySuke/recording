@@ -20,6 +20,8 @@ type ReadyFunc func() bool
 // query 非 nil 时挂载三个只读查询接口（T05，详设 §8.1）；retry 非 nil 时挂载
 // POST /v1/tasks/:id/retry（T08，详设 §8.1）；delete 非 nil 时挂载
 // DELETE /v1/recordings/:id（T09，详设 §8.1/§5.3）。
+// 另挂 GET /ui：本地联调静态页（T14，需求不考察前端——开发辅助，随镜像交付的
+// static/index.html，同源直连避免 CORS；文件缺失时该路径 404，不影响其余路由）。
 func New(logger *slog.Logger, upload *handler.UploadHandler, query *handler.QueryHandler, retry *handler.RetryHandler, delete *handler.DeleteHandler, readyz ReadyFunc) *gin.Engine {
 	r := gin.New()
 	r.Use(
@@ -68,6 +70,9 @@ func New(logger *slog.Logger, upload *handler.UploadHandler, query *handler.Quer
 		r.GET("/v1/recordings", query.HandleList)
 		r.GET("/v1/recordings/:id", query.HandleRecording)
 	}
+	// 联调页（T14）：相对路径在本地（仓库根 go run）与容器（WORKDIR /app）下均命中
+	// ./static/index.html——Dockerfile 将 static/ 一并 COPY 进镜像。
+	r.StaticFile("/ui", "./static/index.html")
 	if retry != nil {
 		r.POST("/v1/tasks/:id/retry", retry.Handle)
 	}

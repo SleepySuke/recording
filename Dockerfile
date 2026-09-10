@@ -27,6 +27,8 @@ WORKDIR /app
 COPY --from=builder --chown=app:app /out/server /app/server
 # 启动时从相对目录 migrations/ 读 SQL 执行迁移（bootstrap.NewApp），必须随镜像交付。
 COPY --from=builder --chown=app:app /src/migrations/ /app/migrations/
+# 联调静态页（T14）：router 以 ./static/index.html 挂 GET /ui，随镜像交付。
+COPY --from=builder --chown=app:app /src/static/ /app/static/
 USER app
 EXPOSE 8080
 ENTRYPOINT ["/app/server"]

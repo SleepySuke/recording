@@ -1,0 +1,44 @@
+### 录音转写服务 · API 调试文件（六个接口全覆盖）
+### 导入方式：VS Code REST Client 直接可用（变量以 @ 定义）；
+### IntelliJ / GoLand HTTP Client 可用 {{base_url}} 前将变量加入环境或直接替换字面量。
+### 浏览器联调页（同源、无 CORS）：{{base_url}}/ui
+### 走读路径：上传 → 轮询任务至 done/failed → 详情看转写与摘要 → 列表 → 删除。
+
+@base_url = http://localhost:8080
+@recording_id = 在上传或列表响应中取得后填入
+@task_id = 在上传响应中取得后填入
+
+### 1. 上传音频（multipart 字段名 file；扩展名 wav/mp3/m4a/aac，≤50MiB）
+### 202 → {"recording_id":"...","task_id":"...","status":"pending"}；非法扩展名/空文件 → 400
+POST {{base_url}}/v1/recordings
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="meeting.wav"
+Content-Type: audio/wav
+
+< ./meeting.wav
+--WebAppBoundary--
+
+### 2. 任务状态轮询（失败任务仍 200：status=failed + error.code，如 50001=LLM_TIMEOUT）
+### 阶段：pending → transcribing → summarizing → done；失败 → failed
+GET {{base_url}}/v1/tasks/{{task_id}}
+
+### 3. 录音详情（done 后 transcript 与 result.summary/key_points/todos 非 null）
+GET {{base_url}}/v1/recordings/{{recording_id}}
+
+### 4. 录音分页列表（page 默认 1、page_size 默认 20 最大 100；按创建时间倒序，软删除中不可见）
+GET {{base_url}}/v1/recordings?page=1&page_size=20
+
+### 5. 手动重试失败任务（仅 failed 可重试：复用 task_id、attempt+1、从头执行；其余状态 → 409/30002）
+### 操作路径：先用接口 2 查询任务 → 确认 status=failed 且记录 task_id → 发本请求 → 再轮询观察新一轮执行
+POST {{base_url}}/v1/tasks/{{task_id}}/retry
+
+### 6. 删除录音（204：标记软删除 + 取消在途任务，文件由后台清理循环移除；不存在 → 404）
+DELETE {{base_url}}/v1/recordings/{{recording_id}}
+
+### 附：健康与就绪（就绪门控：启动恢复全部完成才 ready；未就绪时上传返回 503）
+GET {{base_url}}/healthz
+
+###
+GET {{base_url}}/readyz

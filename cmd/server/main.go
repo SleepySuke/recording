@@ -25,7 +25,9 @@ func main() {
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := bootstrap.Run(sigCtx, cfg); err != nil {
-		// Run 已记日志；非零退出码交由容器重启策略接管（详设 §6.2）。
+		// NewApp 在 logger 建立前失败（DB 连接/迁移等）时无日志可写，补 stderr 一行
+		// 保容器日志可诊断；非零退出码交由容器重启策略接管（详设 §6.2）。
+		fmt.Fprintln(os.Stderr, "启动失败:", err)
 		os.Exit(1)
 	}
 }
