@@ -46,7 +46,24 @@ flowchart TB
 
 ## 快速开始
 
-### 1. 准备配置
+### 1. 首次克隆后的前置条件
+
+需要安装并启动 Docker Desktop（含 `docker compose` 插件）和 Go 1.23.x。即使选择 Docker Compose 方式，`make start` 也会执行 `make check`，因此仍会检查 Go 工具链；可先运行：
+
+```bash
+make check
+```
+
+本项目的数据库有两种连接视角，**不要互换使用**：
+
+| 运行位置 | 应使用的地址 | 原因 |
+| --- | --- | --- |
+| Compose 中的 `app` 容器 | `db:3306` | `db` 是 Compose 网络中的服务 DNS 名；容器内的 3306 是 MySQL 自身端口 |
+| 宿主机上的 `make dev` / 本地客户端 | `127.0.0.1:<MYSQL_PORT>` | 宿主机不能解析 Compose 服务名 `db`，须通过发布到宿主机的端口访问 |
+
+`make start` 会自动覆盖 app 容器的 `MYSQL_DSN` 为 `db:3306`；无需、也不应把 `.env` 中面向本地开发的 `127.0.0.1` 改成 `db`。`MYSQL_PORT` 只影响宿主机映射端口，不影响容器间始终使用的 `db:3306`。
+
+### 2. 准备配置
 
 ```bash
 make setup
@@ -63,7 +80,16 @@ LLM_API_KEY=替换为你的真实密钥
 
 `LLM_API_KEY` 为空时服务会拒绝启动。密钥只应保留在本机 `.env`，不要提交到仓库或写入日志。
 
-### 2. 用 Docker 启动
+若宿主机的 3306 已被其他 MySQL 占用，在 `.env` 同时改为下列配对值，再启动 Compose：
+
+```dotenv
+MYSQL_PORT=3307
+MYSQL_DSN='recording:recordingpass@tcp(127.0.0.1:3307)/recording?parseTime=true&loc=UTC'
+```
+
+第一行给宿主机发布 Compose MySQL 的端口，第二行供后续 `make dev` 使用；Compose 中的 app 仍会自动访问 `db:3306`。
+
+### 3. 方式 A：自包含 Docker Compose 启动（新机器推荐）
 
 ```bash
 make start
@@ -72,17 +98,44 @@ curl http://localhost:8080/readyz
 
 当 `/readyz` 返回 `200` 时，迁移和启动恢复均已完成，服务可以接收上传。服务地址为 `http://localhost:8080`；浏览器联调页在 `http://localhost:8080/ui`。
 
-代码改动后先执行 `make build`，再执行 `make start`。查看容器日志用 `make logs`，停止容器但保留数据卷用 `make down`。
+`make start` 会依次校验环境、启动本仓库的 `db` 和 `app` 容器、等待 MySQL 健康检查、执行迁移和启动恢复，再轮询 `/readyz`。首次启动会拉取或构建镜像；之后会复用已有容器和数据卷。代码改动后先执行 `make build`，再执行 `make start`。查看容器日志用 `make logs`，停止容器但保留数据卷用 `make down`。
 
-### 3. 本地开发模式
+### 4. 方式 B：本地 `make dev`（Go 进程 + 可用 MySQL）
 
-已有可用 MySQL 时，可以不启动 compose：
+`make dev` **只运行本机 Go 进程，不会创建数据库容器、数据库或用户**。启动前必须保证 `.env` 中的 `MYSQL_DSN` 指向一个已可访问的 MySQL 8.0+ 实例，并且 `recording` 库及 `recording` 用户已经存在。
+
+如果没有现成 MySQL，最简单的开发组合是只启动仓库自带数据库容器：
+
+```bash
+docker compose up -d db
+docker compose ps db
+make dev
+```
+
+这时本机 Go 进程通过 `.env` 的 `127.0.0.1:${MYSQL_PORT}` 连接数据库。若此前执行过 `make start`，app 容器也会占用宿主机 8080；保留 db、仅停止 app 后再本地运行：
+
+```bash
+docker compose stop app
+make dev
+```
+
+也可以接入自行管理的 MySQL；使用管理员账号执行一次：
+
+```sql
+CREATE DATABASE recording;
+CREATE DATABASE recording_test;
+CREATE USER 'recording'@'%' IDENTIFIED BY 'recordingpass';
+GRANT ALL ON recording.* TO 'recording'@'%';
+GRANT ALL ON recording_test.* TO 'recording'@'%';
+```
+
+然后把 `.env` 的 `MYSQL_DSN` 改为该实例的宿主、端口和凭据，再执行：
 
 ```bash
 make dev
 ```
 
-该命令读取 `.env` 后运行 `go run ./cmd/server`。它占用 8080；若之前用过 `make start`，先运行 `make down` 释放端口。
+该命令读取 `.env` 后运行 `go run ./cmd/server` 并占用 8080；`Ctrl-C` 只会停止本机应用进程，不会停止 MySQL 容器。完成本地开发后可使用 `make down` 停止 Compose 容器，同时保留数据卷。
 
 ## 最短联调：用 Mock ASR 跑通流程
 
