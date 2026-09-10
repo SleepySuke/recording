@@ -25,9 +25,10 @@ type UploadRequest struct {
 
 // UploadResult 上传用例输出：202 响应体所需字段。
 type UploadResult struct {
-	RecordingID string
-	TaskID      string
-	Status      domain.TaskStatus
+	RecordingID      string
+	TaskID           string
+	Status           domain.TaskStatus
+	IdempotentReused bool
 }
 
 // UploadService 上传用例（详设 §5.1 判定树逐分支）。
@@ -112,7 +113,7 @@ func (s *UploadService) Upload(ctx context.Context, req UploadRequest) (UploadRe
 	}
 
 	// rename 已完成 → 事务①（架构 §3）：三行同事务，任一失败整体回滚。
-	err = s.tx.CreateWithTask(ctx, ports.CreateInput{Recording: rec, Task: task, Event: event})
+	txResult, err := s.tx.CreateOrReuseByContentHash(ctx, ports.CreateInput{Recording: rec, Task: task, Event: event})
 	if err != nil {
 		if errors.Is(err, ports.ErrCommitUnknown) {
 			// 提交结果未知：保守保留文件（详设 §5.2），待核实，不删。
@@ -129,8 +130,21 @@ func (s *UploadService) Upload(ctx context.Context, req UploadRequest) (UploadRe
 		return UploadResult{}, errorcode.New(errorcode.CodeDatabaseUnavailable, err)
 	}
 
-	// 提交成功：非阻塞唤醒 worker 认领（详设 §2.5/§3.3；丢失由 1s 轮询兜底），
-	// 随后事件镜像（尽力而为，详设 §7.4）+ 202 所需结果。
+	if txResult.Reused {
+		// 复用已提交的聚合：当前请求的 UUID 文件从未被数据库引用，提交后再删。
+		if derr := s.store.Delete(context.WithoutCancel(ctx), stored.StoragePath); derr != nil {
+			s.logger.Error("复用上传的重复文件删除失败，留待启动核对",
+				slog.String("storage_path", stored.StoragePath), slog.Any("err", derr))
+			return UploadResult{}, errorcode.New(errorcode.CodeFileStorageUnavailable, derr)
+		}
+		s.logger.Info("上传内容复用已有录音",
+			slog.String("recording_id", txResult.RecordingID),
+			slog.String("task_id", txResult.TaskID), slog.String("content_hash", stored.ContentHash))
+		return UploadResult{RecordingID: txResult.RecordingID, TaskID: txResult.TaskID,
+			Status: txResult.Status, IdempotentReused: true}, nil
+	}
+
+	// 仅新建成功时唤醒 worker 与镜像 task_created；复用分支不产生新事件。
 	if s.notifier != nil {
 		s.notifier.Notify()
 	}
@@ -141,5 +155,5 @@ func (s *UploadService) Upload(ctx context.Context, req UploadRequest) (UploadRe
 		slog.Int64("size_bytes", stored.SizeBytes),
 		slog.String("content_hash", stored.ContentHash),
 	)
-	return UploadResult{RecordingID: recordingID, TaskID: taskID, Status: task.Status}, nil
+	return UploadResult{RecordingID: recordingID, TaskID: taskID, Status: task.Status, IdempotentReused: false}, nil
 }

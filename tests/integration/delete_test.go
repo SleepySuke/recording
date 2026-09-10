@@ -489,7 +489,7 @@ func TestIT19_EventChainReconstructable(t *testing.T) {
 
 	// B：失败（LLM 挂起 → 50001）→ 手动重试 → 成功（7 事件跨两轮，详设 §7.1/§9）。
 	h.Fake.SetMode(llm.FakeModeHang)
-	wb := doUpload(t, h.Router, formPart{field: "file", filename: "it19-b.wav", content: contentOf(1024)})
+	wb := doUpload(t, h.Router, formPart{field: "file", filename: "it19-b.wav", content: append(contentOf(1023), 'b')})
 	if wb.Code != http.StatusAccepted {
 		t.Fatalf("上传 B status = %d, want 202", wb.Code)
 	}

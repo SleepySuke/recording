@@ -73,6 +73,10 @@ flowchart TB
 | IT-17 | panic 恢复 | 阶段钩子注入 panic | 任务 failed/90001，worker 继续认领下一任务 | §3.2 |
 | IT-18 | 优雅退出 | SIGTERM 时有在途任务 | 停止认领；在途任务完成或保持在途供恢复，无伪 failed | §3.5 |
 | IT-19 | 事件链可还原 | 成功/失败/重试/删除各跑一遍后按 task_id 查事件 | event_seq 严格递增、attempt 正确、跨轮次完整 | §7.1 |
+| IT-20 | 同字节顺序上传复用 | 相同字节先后上传两次 | 第二次 reused=true、ID 相同、只有一套业务行和一个 task_created | 上传幂等设计 §6 |
+| IT-21 | 同名异内容不复用 | 同文件名、不同字节上传两次 | 两次 reused=false、各有独立 recording/task/event | 上传幂等设计 §6 |
+| IT-22 | 删除中不复用 | 标记删除但未完成清理后上传相同字节 | 新建并返回 reused=false，旧资源不被返回 | 上传幂等设计 §3.2/§6 |
+| IT-23 | 并发相同内容只创建一次 | 并发上传相同字节 | 恰一条新建、其余复用；无重复任务或创建事件 | 上传幂等设计 §2/§6 |
 
 ## 5. E2E 测试：预期-真实比对
 
@@ -92,6 +96,7 @@ E2E 分两级，共用同一套 golden 比对机制（§5.1）与结果目录（
 | T11 | E2E-06 | 已落地（T11，e2e/restart_test.go） |
 | T12 | 接入 `make e2e` | 已落地（T13 接线：`make e2e` = 过程级 golden，无 DSN 自动跳过并说明） |
 | T13 | compose 全栈 golden 冒烟 E-COMPOSE（单例，非全量重驱——深度验收在过程级） | 已落地（T13，e2e/compose_smoke_test.go + expected/E-COMPOSE.json） |
+| T15 | E2E-09（重复上传幂等） | 已落地（`e2e/idempotency_test.go` + `expected/E09.json`） |
 
 ### 5.1 比对机制（golden 模式）
 
@@ -111,6 +116,7 @@ E2E 分两级，共用同一套 golden 比对机制（§5.1）与结果目录（
 | E2E-06 | 重启恢复 | 注入长延迟使任务停在 summarizing → `docker kill` → 重启 | 恢复后 done；attempt=2；事件含 task_recovered；logs 按 task_id 可还原全周期 | §6 |
 | E2E-07 | 并发上限 | worker=3 时并发上传 5 个 | 全部 done；同一执行轮次无重复 task_claimed；完成时间体现 3 并发排队 | §3.1/§4.3 |
 | E2E-08 | 列表与状态汇总 | 混合状态多任务上传后列表 | 分页正确、倒序、每项 task 状态正确 | §8.1 |
+| E2E-09 | 重复上传幂等 | 经真实 HTTP 上传相同字节两次 | 相同 ID、reused 字段正确、只有一次 worker 消费与一个最终文件 | 上传幂等设计 §6 |
 
 ### 5.3 结果目录约定
 

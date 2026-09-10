@@ -531,8 +531,9 @@ func TestIT14_LLMBoundaryMapping(t *testing.T) {
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h.Fake.SetMode(tc.mode)
+			content := append(contentOf(2047), byte(i)) // 每个 LLM 边界场景必须创建独立任务。
 			w := doUpload(t, h.Router, formPart{
-				field: "file", filename: fmt.Sprintf("it14-%d.wav", i), content: contentOf(2048),
+				field: "file", filename: fmt.Sprintf("it14-%d.wav", i), content: content,
 			})
 			if w.Code != 202 {
 				t.Fatalf("上传 status = %d, want 202, body=%q", w.Code, w.Body.String())

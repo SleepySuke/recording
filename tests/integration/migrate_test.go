@@ -13,7 +13,7 @@ func TestIT_MigrationIdempotent(t *testing.T) {
 	db := RequireTestDB(t)
 
 	// 清空到全新库状态：删四张表（含迁移账本），从零验证。
-	for _, table := range []string{"task_events", "tasks", "recordings", "schema_migrations"} {
+	for _, table := range []string{"task_events", "tasks", "recordings", "recording_hash_locks", "schema_migrations"} {
 		if err := db.Exec("DROP TABLE IF EXISTS " + table).Error; err != nil {
 			t.Fatalf("预清理 DROP %s 失败: %v", table, err)
 		}

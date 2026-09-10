@@ -95,9 +95,10 @@ func (h *UploadHandler) Handle(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, dto.UploadResponse{
-		RecordingID: res.RecordingID,
-		TaskID:      res.TaskID,
-		Status:      string(res.Status),
+		RecordingID:      res.RecordingID,
+		TaskID:           res.TaskID,
+		Status:           string(res.Status),
+		IdempotentReused: res.IdempotentReused,
 	})
 }
 

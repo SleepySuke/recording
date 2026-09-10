@@ -239,9 +239,10 @@ func (h *e2eHarness) doRetry(taskID string) (int, []byte) {
 
 // uploadResp 上传 202 响应体（与 handler 实际返回一致）。
 type uploadResp struct {
-	RecordingID string `json:"recording_id"`
-	TaskID      string `json:"task_id"`
-	Status      string `json:"status"`
+	RecordingID      string `json:"recording_id"`
+	TaskID           string `json:"task_id"`
+	Status           string `json:"status"`
+	IdempotentReused bool   `json:"idempotent_reused"`
 }
 
 // postUpload 真实 multipart 上传（每次调用独立构造请求体，并发安全）。

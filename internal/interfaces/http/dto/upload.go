@@ -3,7 +3,8 @@ package dto
 
 // UploadResponse POST /v1/recordings 202 响应体。
 type UploadResponse struct {
-	RecordingID string `json:"recording_id"`
-	TaskID      string `json:"task_id"`
-	Status      string `json:"status"`
+	RecordingID      string `json:"recording_id"`
+	TaskID           string `json:"task_id"`
+	Status           string `json:"status"`
+	IdempotentReused bool   `json:"idempotent_reused"`
 }

@@ -60,6 +60,75 @@ func (t *RecordingTxGORM) CreateWithTask(ctx context.Context, in ports.CreateInp
 	return nil
 }
 
+// CreateOrReuseByContentHash 按上传幂等设计完成“锁 hash → 查活跃聚合 → 复用或创建”。
+// INSERT IGNORE 后的 FOR UPDATE 锁是跨请求、跨 goroutine 的持久互斥点；不能以应用
+// 内存锁或单独的先查后插替代。复用分支不写任务或事件。
+func (t *RecordingTxGORM) CreateOrReuseByContentHash(ctx context.Context, in ports.CreateInput) (ports.CreateOrReuseResult, error) {
+	// 哈希锁行是永久基础设施元数据，先用独立短语句确保其存在。若把 INSERT IGNORE
+	// 与紧随其后的 FOR UPDATE 放进每个并发业务事务，首个 hash 会形成 insert-intention
+	// 死锁；业务判定本身仍从下面 BEGIN 后的行锁开始。
+	if err := t.ensureHashLock(ctx, in.Recording.ContentHash, in.Recording.CreatedAt); err != nil {
+		return ports.CreateOrReuseResult{}, err
+	}
+	tx := t.db.WithContext(ctx).Begin()
+	if err := tx.Error; err != nil {
+		return ports.CreateOrReuseResult{}, fmt.Errorf("开启上传幂等事务失败: %w", err)
+	}
+	rollback := func(err error) (ports.CreateOrReuseResult, error) {
+		_ = tx.Rollback().Error
+		return ports.CreateOrReuseResult{}, err
+	}
+
+	var lock RecordingHashLockPO
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("content_hash = ?", in.Recording.ContentHash).First(&lock).Error; err != nil {
+		return rollback(fmt.Errorf("锁定内容哈希失败: %w", err))
+	}
+
+	// hash 锁内查询，任务与录音一同加锁。删除中资源不参与命中，允许创建替代聚合。
+	var existing struct {
+		RecordingID string `gorm:"column:recording_id"`
+		TaskID      string `gorm:"column:task_id"`
+		Status      string `gorm:"column:status"`
+	}
+	err := tx.Raw(`SELECT r.id AS recording_id, t.id AS task_id, t.status
+		FROM recordings r JOIN tasks t ON t.recording_id = r.id
+		WHERE r.content_hash = ? AND r.deleting_at IS NULL
+		ORDER BY r.created_at, r.id LIMIT 1 FOR UPDATE`, in.Recording.ContentHash).Scan(&existing).Error
+	if err != nil {
+		return rollback(fmt.Errorf("查询可复用录音失败: %w", err))
+	}
+	if existing.RecordingID != "" {
+		if err := tx.Commit().Error; err != nil {
+			return ports.CreateOrReuseResult{}, fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
+		}
+		return ports.CreateOrReuseResult{
+			RecordingID: existing.RecordingID,
+			TaskID:      existing.TaskID,
+			Status:      domain.TaskStatus(existing.Status),
+			Reused:      true,
+		}, nil
+	}
+
+	if err := tx.Create(toRecordingPO(in.Recording)).Error; err != nil {
+		return rollback(fmt.Errorf("插入 recordings 失败: %w", err))
+	}
+	if err := tx.Create(toTaskPO(in.Task)).Error; err != nil {
+		return rollback(fmt.Errorf("插入 tasks 失败: %w", err))
+	}
+	if err := tx.Create(toTaskEventPO(in.Event)).Error; err != nil {
+		return rollback(fmt.Errorf("插入 task_events 失败: %w", err))
+	}
+	if err := tx.Commit().Error; err != nil {
+		return ports.CreateOrReuseResult{}, fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
+	}
+	return ports.CreateOrReuseResult{
+		RecordingID: in.Recording.ID,
+		TaskID:      in.Task.ID,
+		Status:      in.Task.Status,
+	}, nil
+}
+
 // RetryTask 重试事务（详设 §4.5，架构 §3 失败与重试段）：锁 tasks → recordings 行
 // （§4.2 锁顺序）→ 锁内复查 status=failed 且未删除 → 条件更新 attempt+1 回 pending、
 // 清空上轮 transcript/summary_json/error_code/error_message/started_at/finished_at →
@@ -174,22 +243,47 @@ func (t *RecordingTxGORM) RetryTask(ctx context.Context, taskID string) (int, er
 // 条件置 deleting_at + 同事务 task_delete_requested 事件（删除事件保持原状态，
 // §7.2）+ 任务行 event_seq 推进（§7.2 序号分配器）→ COMMIT 后镜像事件。
 func (t *RecordingTxGORM) MarkDeleting(ctx context.Context, recordingID string) (string, bool, error) {
-	// 无锁预查任务 ID 仅为确定锁序入口；并发删除/清理使其过期时，行锁 NotFound 兜底。
-	var taskID string
-	if err := t.db.WithContext(ctx).Raw(
-		"SELECT id FROM tasks WHERE recording_id = ?", recordingID).Scan(&taskID).Error; err != nil {
-		return "", false, fmt.Errorf("查询关联任务失败: %w", err)
+	// 预查只取得 hash/task 作为 hash 锁入口；真正存在性在事务、锁内复查。
+	var hint struct {
+		ContentHash string `gorm:"column:content_hash"`
+		TaskID      string `gorm:"column:task_id"`
+	}
+	if err := t.db.WithContext(ctx).Raw(`SELECT r.content_hash, t.id AS task_id
+		FROM recordings r LEFT JOIN tasks t ON t.recording_id = r.id WHERE r.id = ?`, recordingID).Scan(&hint).Error; err != nil {
+		return "", false, fmt.Errorf("查询录音删除标记前置信息失败: %w", err)
+	}
+	if hint.ContentHash == "" {
+		return "", false, nil
+	}
+	if err := t.ensureHashLock(ctx, hint.ContentHash, time.Now().UTC()); err != nil {
+		return "", false, err
 	}
 
 	tx := t.db.WithContext(ctx).Begin()
 	if tx.Error != nil {
 		return "", false, fmt.Errorf("开启删除标记事务失败: %w", tx.Error)
 	}
+	var hashLock RecordingHashLockPO
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("content_hash = ?", hint.ContentHash).First(&hashLock).Error; err != nil {
+		_ = tx.Rollback().Error
+		return "", false, fmt.Errorf("锁定删除哈希失败: %w", err)
+	}
+
+	var rec RecordingPO
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", recordingID).First(&rec).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		_ = tx.Rollback().Error
+		return "", false, nil
+	}
+	if err != nil {
+		_ = tx.Rollback().Error
+		return "", false, fmt.Errorf("删除标记锁定录音失败: %w", err)
+	}
 
 	var task TaskPO
 	haveTask := false
-	if taskID != "" {
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", taskID).First(&task).Error
+	if hint.TaskID != "" {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", hint.TaskID).First(&task).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 任务已被并发清理删除：录音随三表清理同去 → 404 语义（详设 §4.6）。
 			_ = tx.Rollback().Error
@@ -202,16 +296,6 @@ func (t *RecordingTxGORM) MarkDeleting(ctx context.Context, recordingID string) 
 		haveTask = true
 	}
 
-	var rec RecordingPO
-	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", recordingID).First(&rec).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		_ = tx.Rollback().Error
-		return "", false, nil // 不存在/已完全删除（详设 §5.3 Exists 分支）
-	}
-	if err != nil {
-		_ = tx.Rollback().Error
-		return "", false, fmt.Errorf("删除标记锁定录音失败: %w", err)
-	}
 	if rec.DeletingAt != nil {
 		// 幂等续做：已标记不重复追加 task_delete_requested（详设 §5.3）。
 		_ = tx.Rollback().Error
@@ -272,6 +356,16 @@ func (t *RecordingTxGORM) MarkDeleting(ctx context.Context, recordingID string) 
 		return "", false, fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
 	}
 	return "", true, nil
+}
+
+// ensureHashLock 确保持久哈希锁行存在。该行永不删除，独立提交不会暴露任何 recording
+// 或 task；后续业务事务通过 SELECT ... FOR UPDATE 取得真正的串行化点。
+func (t *RecordingTxGORM) ensureHashLock(ctx context.Context, contentHash string, createdAt time.Time) error {
+	if err := t.db.WithContext(ctx).Exec(
+		"INSERT IGNORE INTO recording_hash_locks (content_hash, created_at) VALUES (?, ?)", contentHash, createdAt).Error; err != nil {
+		return fmt.Errorf("确保内容哈希锁失败: %w", err)
+	}
+	return nil
 }
 
 // PurgeRecording 三表清理事务（详设 §5.3 步骤 4/§4.6）：同一事务按

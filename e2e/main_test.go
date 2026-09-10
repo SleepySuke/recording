@@ -122,7 +122,7 @@ func requireTestDB(t *testing.T) *gorm.DB {
 	if err := mysql.Migrate(db, "migrations"); err != nil {
 		t.Fatalf("测试前置迁移失败: %v", err)
 	}
-	for _, table := range []string{"recordings", "tasks", "task_events"} {
+	for _, table := range []string{"recordings", "tasks", "task_events", "recording_hash_locks"} {
 		if err := db.Exec("TRUNCATE TABLE " + table).Error; err != nil {
 			t.Fatalf("清空 %s 失败: %v", table, err)
 		}

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,9 +37,156 @@ const (
 )
 
 type uploadResp struct {
-	RecordingID string `json:"recording_id"`
-	TaskID      string `json:"task_id"`
-	Status      string `json:"status"`
+	RecordingID      string `json:"recording_id"`
+	TaskID           string `json:"task_id"`
+	Status           string `json:"status"`
+	IdempotentReused bool   `json:"idempotent_reused"`
+}
+
+// TestIT20_SameContentReusesActiveRecording：顺序上传完全相同字节时，第二次只复用
+// 既有录音与任务，不产生第二套业务行/创建事件，也不保留重复文件。
+func TestIT20_SameContentReusesActiveRecording(t *testing.T) {
+	r, db, dataDir, _ := newUploadEnv(t)
+	content := contentOf(4096)
+
+	first := doUpload(t, r, formPart{field: "file", filename: "first.wav", content: content})
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("首次上传 status=%d, want 202, body=%q", first.Code, first.Body.String())
+	}
+	firstResp := decodeUpload(t, first)
+	if firstResp.IdempotentReused {
+		t.Fatal("首次上传 idempotent_reused=true, want false")
+	}
+	second := doUpload(t, r, formPart{field: "file", filename: "renamed.wav", content: content})
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("重复上传 status=%d, want 202, body=%q", second.Code, second.Body.String())
+	}
+	secondResp := decodeUpload(t, second)
+	var raw map[string]any
+	if err := json.Unmarshal(second.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("解码重复上传原始响应失败: %v", err)
+	}
+	if _, ok := raw["idempotent_reused"]; !ok {
+		t.Fatal("成功响应缺少必填字段 idempotent_reused")
+	}
+	if !secondResp.IdempotentReused || secondResp.RecordingID != firstResp.RecordingID || secondResp.TaskID != firstResp.TaskID || secondResp.Status != "pending" {
+		t.Fatalf("重复上传响应=%+v, want 复用首次响应=%+v", secondResp, firstResp)
+	}
+	if n := tableCount(t, db, "recordings"); n != 1 {
+		t.Errorf("recordings=%d, want 1", n)
+	}
+	if n := tableCount(t, db, "tasks"); n != 1 {
+		t.Errorf("tasks=%d, want 1", n)
+	}
+	if n := tableCount(t, db, "task_events"); n != 1 {
+		t.Errorf("task_events=%d, want 1 (only task_created)", n)
+	}
+	if files := dataFiles(t, dataDir); len(files) != 1 {
+		t.Errorf("数据目录文件=%v, want exactly one", files)
+	}
+}
+
+// TestIT21_SameFilenameDifferentContentCreatesNew：文件名不参与哈希判定。
+func TestIT21_SameFilenameDifferentContentCreatesNew(t *testing.T) {
+	r, db, _, _ := newUploadEnv(t)
+	first := decodeUpload(t, doUpload(t, r, formPart{field: "file", filename: "same.wav", content: []byte("audio-a")}))
+	second := decodeUpload(t, doUpload(t, r, formPart{field: "file", filename: "same.wav", content: []byte("audio-b")}))
+	if first.IdempotentReused || second.IdempotentReused || first.RecordingID == second.RecordingID || first.TaskID == second.TaskID {
+		t.Fatalf("同名异内容响应 first=%+v second=%+v, want two new resources", first, second)
+	}
+	if n := tableCount(t, db, "recordings"); n != 2 {
+		t.Errorf("recordings=%d, want 2", n)
+	}
+	if n := tableCount(t, db, "task_events"); n != 2 {
+		t.Errorf("task_events=%d, want 2", n)
+	}
+}
+
+// TestIT22_DeletingRecordingIsNotReused：删除标记已提交但最终清理未完成时，相同内容
+// 必须新建资源，不能把即将不可见的旧任务返回给上传方。
+func TestIT22_DeletingRecordingIsNotReused(t *testing.T) {
+	r, db, _, _ := newUploadEnv(t)
+	content := contentOf(2048)
+	first := decodeUpload(t, doUpload(t, r, formPart{field: "file", filename: "delete-race.wav", content: content}))
+	if _, ok, err := mysql.NewRecordingTx(db, itInstanceID, nil).MarkDeleting(context.Background(), first.RecordingID); err != nil || !ok {
+		t.Fatalf("预置 deleting_at 失败: ok=%v err=%v", ok, err)
+	}
+	second := decodeUpload(t, doUpload(t, r, formPart{field: "file", filename: "delete-race.wav", content: content}))
+	if second.IdempotentReused || second.RecordingID == first.RecordingID || second.TaskID == first.TaskID {
+		t.Fatalf("删除中重传响应=%+v, want new resource distinct from %+v", second, first)
+	}
+	var active int64
+	if err := db.Raw("SELECT COUNT(*) FROM recordings WHERE deleting_at IS NULL").Scan(&active).Error; err != nil {
+		t.Fatalf("查询 active recordings 失败: %v", err)
+	}
+	if active != 1 {
+		t.Errorf("active recordings=%d, want 1", active)
+	}
+}
+
+// TestIT23_ConcurrentSameContentCreatesOnce：真实 MySQL 下并发请求同一内容，哈希锁必须
+// 让恰好一个请求创建三行，其余请求复用同一组 ID。
+func TestIT23_ConcurrentSameContentCreatesOnce(t *testing.T) {
+	r, db, dataDir, _ := newUploadEnv(t)
+	const callers = 8
+	content := contentOf(4096)
+	results := make(chan uploadResp, callers)
+	codes := make(chan int, callers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			w := doUpload(t, r, formPart{field: "file", filename: "parallel.wav", content: content})
+			codes <- w.Code
+			if w.Code == http.StatusAccepted {
+				results <- decodeUpload(t, w)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(codes)
+
+	var first uploadResp
+	created, reused, received := 0, 0, 0
+	for resp := range results {
+		received++
+		if first.RecordingID == "" {
+			first = resp
+		}
+		if resp.RecordingID != first.RecordingID || resp.TaskID != first.TaskID {
+			t.Errorf("并发响应 ID 不一致: got=%+v baseline=%+v", resp, first)
+		}
+		if resp.IdempotentReused {
+			reused++
+		} else {
+			created++
+		}
+	}
+	for code := range codes {
+		if code != http.StatusAccepted {
+			t.Errorf("并发上传 HTTP=%d, want 202", code)
+		}
+	}
+	if received != callers || created != 1 || reused != callers-1 {
+		t.Fatalf("并发结果 received=%d created=%d reused=%d, want %d/1/%d", received, created, reused, callers, callers-1)
+	}
+	if n := tableCount(t, db, "recordings"); n != 1 {
+		t.Errorf("recordings=%d, want 1", n)
+	}
+	if n := tableCount(t, db, "tasks"); n != 1 {
+		t.Errorf("tasks=%d, want 1", n)
+	}
+	if n := tableCount(t, db, "task_events"); n != 1 {
+		t.Errorf("task_events=%d, want 1", n)
+	}
+	if files := dataFiles(t, dataDir); len(files) != 1 {
+		t.Errorf("数据目录文件=%v, want exactly one", files)
+	}
 }
 
 type apiErrorBody struct {

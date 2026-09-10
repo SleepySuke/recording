@@ -39,6 +39,14 @@ func (s *stubRecordingTx) CreateWithTask(context.Context, ports.CreateInput) err
 	return s.err
 }
 
+func (s *stubRecordingTx) CreateOrReuseByContentHash(_ context.Context, in ports.CreateInput) (ports.CreateOrReuseResult, error) {
+	s.called = true
+	if s.err != nil {
+		return ports.CreateOrReuseResult{}, s.err
+	}
+	return ports.CreateOrReuseResult{RecordingID: in.Recording.ID, TaskID: in.Task.ID, Status: in.Task.Status}, nil
+}
+
 // RetryTask 满足 T08 起扩展的端口面（本文件只测上传链，不会被调用）。
 func (s *stubRecordingTx) RetryTask(context.Context, string) (int, error) {
 	return 0, nil

@@ -96,7 +96,7 @@ const migrationsDir = "migrations"
 
 // RequireTestDB 打开 TEST_MYSQL_DSN 指向的测试库：
 // 未设置 → 跳过；DSN 不含 "test" → 直接失败（测试库红线，禁止指向业务数据）；
-// 返回前执行幂等迁移并 TRUNCATE 三表，保证每用例干净起点。
+// 返回前执行幂等迁移并清理业务表与哈希锁表，保证每用例干净起点。
 func RequireTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := os.Getenv("TEST_MYSQL_DSN")
@@ -119,7 +119,7 @@ func RequireTestDB(t *testing.T) *gorm.DB {
 	if err := mysql.Migrate(db, migrationsDir); err != nil {
 		t.Fatalf("测试前置迁移失败: %v", err)
 	}
-	for _, table := range []string{"recordings", "tasks", "task_events"} {
+	for _, table := range []string{"recordings", "tasks", "task_events", "recording_hash_locks"} {
 		if err := db.Exec("TRUNCATE TABLE " + table).Error; err != nil {
 			t.Fatalf("清空 %s 失败: %v", table, err)
 		}

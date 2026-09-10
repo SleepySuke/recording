@@ -20,6 +20,14 @@ type RecordingPO struct {
 
 func (RecordingPO) TableName() string { return "recordings" }
 
+// RecordingHashLockPO 是内容哈希的持久互斥点，不是业务资源；删除 recording 时保留。
+type RecordingHashLockPO struct {
+	ContentHash string    `gorm:"column:content_hash;primaryKey;size:64"`
+	CreatedAt   time.Time `gorm:"column:created_at"`
+}
+
+func (RecordingHashLockPO) TableName() string { return "recording_hash_locks" }
+
 // TaskPO 处理任务（tasks 表）；recording_id 唯一逻辑关联，重试复用 id 递增 attempt。
 type TaskPO struct {
 	ID               string     `gorm:"column:id;size:36"`

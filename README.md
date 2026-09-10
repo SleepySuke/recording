@@ -8,7 +8,7 @@
 
 | 功能 | 状态 | 说明 |
 | --- | --- | --- |
-| 录音上传与本地存储 | 已实现 | 支持 `wav`、`mp3`、`m4a`、`aac`，单文件最大 50 MiB |
+| 录音上传与本地存储 | 已实现 | 支持 `wav`、`mp3`、`m4a`、`aac`，单文件最大 50 MiB；相同完整内容复用已有任务 |
 | 异步处理 | 已实现 | 3 个 worker；MySQL `SKIP LOCKED` 认领任务，支持进程重启恢复 |
 | 任务和录音查询 | 已实现 | 任务进度、分页列表、完成后的转写文本和结构化摘要 |
 | 失败重试与删除 | 已实现 | 仅失败任务可手动重试；删除会取消在途处理并清理关联数据 |
@@ -37,7 +37,7 @@ flowchart TB
     S["启动恢复（迁移后、worker 前）"] -.->|"在途任务重置重做 / interrupt 标 failed"| D
 ```
 
-实线为数据和请求响应，虚线为后台调度与生命周期动作。上传经 HTTP 进入，接收文件、落盘并在事务①中创建三行记录后即返回 202/pending，不等待任何处理；空闲 worker 被 channel 唤醒（或 1s 轮询兜底），在事务②中以 SKIP LOCKED 认领任务进入 transcribing；Mock 转写成功后事务④写入 transcript 并进入 summarizing，LLM 摘要校验通过则事务⑤写 summary_json 置 done，任一阶段失败进入事务③写 failed 与对应业务错误码。删除先标记 `deleting_at` 软删除并取消在途执行，再同步清理三表与文件，失败的清理由后台循环续做；进程重启时在 worker 启动前恢复在途任务。任务依次经历 pending → transcribing → summarizing → done/failed。
+实线为数据和请求响应，虚线为后台调度与生命周期动作。上传经 HTTP 进入，接收文件、落盘并按内容 SHA-256 在事务中判断复用或创建：首次创建三行记录后返回 `202/pending`，同内容命中未删除录音则返回既有任务且不重复派发。空闲 worker 被 channel 唤醒（或 1s 轮询兜底），在事务②中以 SKIP LOCKED 认领任务进入 transcribing；Mock 转写成功后事务④写入 transcript 并进入 summarizing，LLM 摘要校验通过则事务⑤写 summary_json 置 done，任一阶段失败进入事务③写 failed 与对应业务错误码。删除先标记 `deleting_at` 软删除并取消在途执行，再同步清理三表与文件，失败的清理由后台循环续做；进程重启时在 worker 启动前恢复在途任务。任务依次经历 pending → transcribing → summarizing → done/failed。
 
 ![架构静态预览](docs/design/assets/architecture.png)
 
@@ -174,7 +174,7 @@ curl -sS -X POST http://localhost:8080/v1/recordings \
   -F 'file=@api/llm-smoke-demo.wav;type=audio/wav'
 ```
 
-该命令只做一件事：上传文件并打印服务立即返回的 `202` 响应。响应中的 `recording_id` 和 `task_id` 是随后查询任务和结果所需的标识。打开 `http://localhost:8080/ui`，将这两个 ID 粘贴到相应输入框，依次点击“查询任务”和“录音详情”即可看到完整链路。
+该命令只做一件事：上传文件并打印服务立即返回的 `202` 响应。响应中的 `recording_id` 和 `task_id` 是随后查询任务和结果所需的标识。`idempotent_reused` 在首次内容上传时为 `false`；把同一个文件再上传一次会返回同一组 ID 并变为 `true`，不会重新创建后台任务。打开 `http://localhost:8080/ui`，将这两个 ID 粘贴到相应输入框，依次点击“查询任务”和“录音详情”即可看到完整链路。
 
 成功时，详情响应中 `task.status` 为 `done`，`transcript` 以 `[mock-asr]` 开头，`result.summary` 为非空字符串，`result.key_points` 与 `result.todos` 为数组。若测试完成后不保留该记录，可执行：
 
@@ -198,7 +198,7 @@ curl -i -X DELETE "http://localhost:8080/v1/recordings/<recording_id>"
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `POST /v1/recordings` | multipart 上传，字段名 `file`；成功返回 `202` |
+| `POST /v1/recordings` | multipart 上传，字段名 `file`；成功返回 `202`，响应含 `idempotent_reused`，相同完整内容复用已有任务 |
 | `GET /v1/tasks/{task_id}` | 查询处理状态、执行轮次和异步错误 |
 | `GET /v1/recordings` | 分页列表；`page` 默认 1，`page_size` 默认 20、最大 100 |
 | `GET /v1/recordings/{id}` | 读取录音详情；完成后包含转写与结构化摘要 |

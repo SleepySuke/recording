@@ -64,7 +64,8 @@ func TestE2E08_List(t *testing.T) {
 	keyOf := map[string]string{} // recordingID → 键（upload-N / seed-N）
 	uploadKeys := make([]string, 2)
 	for i := 1; i <= 2; i++ {
-		resp, code, err := h.postUpload(fmt.Sprintf("e2e08-%d.wav", i), contentOf(4096))
+		content := append(contentOf(4095), byte(i)) // 本用例验证两条独立录音，不能使用相同内容。
+		resp, code, err := h.postUpload(fmt.Sprintf("e2e08-%d.wav", i), content)
 		if err != nil {
 			t.Fatalf("上传[%d]失败: %v", i, err)
 		}

@@ -1,0 +1,14 @@
+{
+  "first": {
+    "http_status": 202,
+    "idempotent_reused": false
+  },
+  "second": {
+    "http_status": 202,
+    "idempotent_reused": true,
+    "same_ids": true
+  },
+  "task_created_events": 1,
+  "active_recordings": 1,
+  "stored_files": 1
+}

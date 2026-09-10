@@ -19,9 +19,23 @@ type CreateInput struct {
 	Event     domain.TaskEvent
 }
 
+// CreateOrReuseResult 表示上传事务的线性化结果。Reused 为 true 时三个字段来自
+// 已存在的未删除聚合；为 false 时来自 CreateInput 中新建的聚合。
+type CreateOrReuseResult struct {
+	RecordingID string
+	TaskID      string
+	Status      domain.TaskStatus
+	Reused      bool
+}
+
 // RecordingTx 录音聚合的原子事务端口（详设 §2.4）：创建聚合等操作经端口表达，
 // MySQL 适配器负责实际事务与锁顺序；端口不暴露 *gorm.DB。
 type RecordingTx interface {
+	// CreateOrReuseByContentHash 在一个事务中锁定内容哈希、查询未删除聚合，并决定
+	// 复用或创建。相同 hash 的请求由持久 hash lock 串行化；复用不写 task_events。
+	// 提交结果未知时返回包装 ErrCommitUnknown 的错误。
+	CreateOrReuseByContentHash(ctx context.Context, in CreateInput) (CreateOrReuseResult, error)
+
 	// CreateWithTask 事务①：INSERT recordings + tasks(pending) + task_created 事件，
 	// 任一失败整体回滚。提交结果未知时返回包装 ErrCommitUnknown 的错误。
 	CreateWithTask(ctx context.Context, in CreateInput) error

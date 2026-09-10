@@ -115,7 +115,7 @@ func TestIT17_PanicRecovery(t *testing.T) {
 	}
 
 	// 任务 B：同一 worker（池仅 1 个）继续认领并成功——panic 未击穿 worker。
-	w2 := doUpload(t, h.Router, formPart{field: "file", filename: "it17-next.wav", content: contentOf(2048)})
+	w2 := doUpload(t, h.Router, formPart{field: "file", filename: "it17-next.wav", content: append(contentOf(2047), 'n')})
 	if w2.Code != 202 {
 		t.Fatalf("上传 status = %d, want 202, body=%q", w2.Code, w2.Body.String())
 	}

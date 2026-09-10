@@ -52,7 +52,8 @@ func TestE2E07_Concurrency(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			r := upResult{}
-			r.resp, r.code, r.err = h.postUpload(fmt.Sprintf("e2e-07-%d.wav", i), contentOf(4096))
+			content := append(contentOf(4095), byte(i)) // 文件名不同之外，内容也必须不同；上传按内容幂等。
+			r.resp, r.code, r.err = h.postUpload(fmt.Sprintf("e2e-07-%d.wav", i), content)
 			results[i] = r
 		}(i)
 	}
