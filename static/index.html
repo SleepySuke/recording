@@ -38,7 +38,7 @@
 <section>
   <h2>2. 任务状态轮询（GET /v1/tasks/{task_id}）</h2>
   <div class="row"><input type="text" id="taskId" placeholder="task_id" size="40"> <button id="pollBtn">开始轮询</button> <button id="stopPollBtn" disabled>停止</button></div>
-  <div class="row muted" id="taskInfo">每秒查询一次，展示 status / attempt 阶段变化；done 后自动拉取转写与摘要，failed 后可重试。</div>
+  <div class="row muted" id="taskInfo">每秒查询一次，并同时订阅 SSE 摘要状态流；done 后自动展示结构化摘要，最终 failed 后可手动重试。</div>
   <div class="row"><button id="retryBtn" class="warn" style="display:none">重试该任务（POST /v1/tasks/{task_id}/retry）</button></div>
   <div id="taskResult"></div>
 </section>
@@ -92,7 +92,7 @@ $("upBtn").onclick = function () {
       lastTaskId = body.task_id; lastRecId = body.recording_id;
       $("upOut").innerHTML = "202 已受理：" + badge(body.status) + '<br>recording_id：<span class="mono">' + esc(body.recording_id) + '</span><br>task_id：<span class="mono">' + esc(body.task_id) + "</span>";
       $("taskId").value = lastTaskId; $("recId").value = lastRecId;
-      startPolling();
+      startPolling(); startSummaryStream(lastRecId);
     } else {
       $("upOut").textContent = "HTTP " + xhr.status + "：" + fmtErr(body);
     }
@@ -103,16 +103,16 @@ $("upBtn").onclick = function () {
 };
 
 // ---- 2. 任务轮询：每秒 GET，记录 status/attempt 变化；终态自动拉详情 ----
-var pollTimer = null, lastStatus = null, lastAttempt = null;
-function startPolling() { stopPolling(); $("pollBtn").disabled = true; $("stopPollBtn").disabled = false; pollTick(); pollTimer = setInterval(pollTick, 1000); }
-function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } $("pollBtn").disabled = false; $("stopPollBtn").disabled = true; }
-$("pollBtn").onclick = function () { if ($("taskId").value.trim()) { lastStatus = null; $("taskInfo").textContent = ""; startPolling(); } };
-$("stopPollBtn").onclick = stopPolling;
+var pollTimer = null, summaryStream = null, lastStatus = null, lastAttempt = null;
+function startPolling() { stopPolling(true); $("pollBtn").disabled = true; $("stopPollBtn").disabled = false; pollTick(); pollTimer = setInterval(pollTick, 1000); }
+function stopPolling(closeStream) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } if (closeStream && summaryStream) { summaryStream.close(); summaryStream = null; } $("pollBtn").disabled = false; $("stopPollBtn").disabled = true; }
+$("pollBtn").onclick = function () { if ($("taskId").value.trim()) { lastStatus = null; $("taskInfo").textContent = ""; startPolling(); startSummaryStream($("recId").value.trim()); } };
+$("stopPollBtn").onclick = function () { stopPolling(true); };
 function pollTick() {
   var id = $("taskId").value.trim();
   if (!id) return;
   fetch("/v1/tasks/" + encodeURIComponent(id)).then(function (r) { return r.json().then(function (b) { return { code: r.status, body: b }; }); }).then(function (res) {
-    if (res.code !== 200) { $("taskInfo").textContent = "HTTP " + res.code + "：" + fmtErr(res.body); stopPolling(); return; }
+    if (res.code !== 200) { $("taskInfo").textContent = "HTTP " + res.code + "：" + fmtErr(res.body); stopPolling(true); return; }
     var t = res.body, changed = t.status !== lastStatus || t.attempt !== lastAttempt;
     if (changed) {
       var line = badge(t.status) + " attempt=" + t.attempt + (t.error ? "（错误 " + t.error.code + "：" + esc(t.error.message) + "）" : "");
@@ -121,9 +121,22 @@ function pollTick() {
       lastStatus = t.status; lastAttempt = t.attempt;
     }
     $("retryBtn").style.display = t.status === "failed" ? "" : "none";
-    if (t.status === "done") { stopPolling(); loadDetail(t.recording_id, $("taskResult")); }
+    // 轮询先看到 done 时不关闭 SSE：让服务端 summary 事件完成最终结果展示。
+    if (t.status === "done") { stopPolling(false); }
     if (t.status === "failed" && t.recording_id) { $("recId").value = t.recording_id; }
-  }).catch(function (e) { $("taskInfo").textContent = "轮询请求失败：" + e; stopPolling(); });
+  }).catch(function (e) { $("taskInfo").textContent = "轮询请求失败：" + e; stopPolling(true); });
+}
+function startSummaryStream(recordingId) {
+  if (!recordingId || !window.EventSource) return;
+  if (summaryStream) summaryStream.close();
+  summaryStream = new EventSource("/v1/recordings/" + encodeURIComponent(recordingId) + "/summary/stream");
+  summaryStream.addEventListener("status", function (e) {
+    var t = JSON.parse(e.data); var wait = t.next_retry_at ? "，下次自动重试：" + t.next_retry_at : "";
+    $("taskResult").innerHTML = "SSE：" + badge(t.status) + "（attempt=" + t.attempt + wait + "）";
+  });
+  summaryStream.addEventListener("summary", function (e) { $("taskResult").innerHTML = "SSE 已收到最终摘要：" + renderResult(JSON.parse(e.data)); summaryStream.close(); summaryStream = null; });
+  summaryStream.addEventListener("failed", function (e) { var x = JSON.parse(e.data); $("taskResult").textContent = "SSE：自动重试已耗尽，错误 " + x.code + "：" + x.message; summaryStream.close(); summaryStream = null; });
+  summaryStream.addEventListener("deleted", function () { $("taskResult").textContent = "SSE：录音已删除。"; summaryStream.close(); summaryStream = null; });
 }
 $("retryBtn").onclick = function () { // 仅 failed 任务可重试，其余返回 409
   var id = $("taskId").value.trim();
@@ -131,7 +144,7 @@ $("retryBtn").onclick = function () { // 仅 failed 任务可重试，其余返�
     $("taskResult").innerHTML = res.code === 202
       ? "重试已受理：" + badge(res.body.status) + "（attempt=" + res.body.attempt + "，继续轮询观察）"
       : "重试被拒绝 HTTP " + res.code + "：" + fmtErr(res.body);
-    if (res.code === 202) { lastStatus = null; startPolling(); }
+    if (res.code === 202) { lastStatus = null; startPolling(); startSummaryStream($("recId").value.trim()); }
   }).catch(function (e) { $("taskResult").textContent = "重试请求失败：" + e; });
 };
 

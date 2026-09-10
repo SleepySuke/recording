@@ -23,6 +23,7 @@ type TaskBody struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	StartedAt   *time.Time     `json:"started_at"`
 	FinishedAt  *time.Time     `json:"finished_at"`
+	NextRetryAt *time.Time     `json:"next_retry_at"`
 }
 
 // NewTaskBody 任务视图 → 响应体。
@@ -40,6 +41,7 @@ func NewTaskBody(v ports.TaskView) TaskBody {
 		CreatedAt:   v.CreatedAt,
 		StartedAt:   v.StartedAt,
 		FinishedAt:  v.FinishedAt,
+		NextRetryAt: v.NextRetryAt,
 	}
 }
 

@@ -97,6 +97,7 @@ E2E 分两级，共用同一套 golden 比对机制（§5.1）与结果目录（
 | T12 | 接入 `make e2e` | 已落地（T13 接线：`make e2e` = 过程级 golden，无 DSN 自动跳过并说明） |
 | T13 | compose 全栈 golden 冒烟 E-COMPOSE（单例，非全量重驱——深度验收在过程级） | 已落地（T13，e2e/compose_smoke_test.go + expected/E-COMPOSE.json） |
 | T15 | E2E-09（重复上传幂等） | 已落地（`e2e/idempotency_test.go` + `expected/E09.json`） |
+| T16 | E2E-02/03 改为自动退避后成功；E2E-10 SSE `status → summary` | 已落地（`e2e/retry_test.go`、`e2e/summary_stream_test.go`） |
 
 ### 5.1 比对机制（golden 模式）
 

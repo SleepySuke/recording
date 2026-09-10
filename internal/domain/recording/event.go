@@ -11,6 +11,7 @@ const (
 	EventTranscriptionCompleted EventKind = "transcription_completed"
 	EventTaskCompleted          EventKind = "task_completed"
 	EventTaskFailed             EventKind = "task_failed"
+	EventTaskAutoRetryScheduled EventKind = "task_auto_retry_scheduled"
 	EventTaskRetryAccepted      EventKind = "task_retry_accepted"
 	EventTaskRecovered          EventKind = "task_recovered"
 	EventTaskInterrupted        EventKind = "task_interrupted"

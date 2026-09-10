@@ -205,6 +205,7 @@ func taskView(po TaskPO) ports.TaskView {
 		CreatedAt:   po.CreatedAt,
 		StartedAt:   po.StartedAt,
 		FinishedAt:  po.FinishedAt,
+		NextRetryAt: po.NextRetryAt,
 	}
 	if po.ErrorCode != nil {
 		view.Error = &ports.TaskError{Code: *po.ErrorCode, Message: po.ErrorMessage}

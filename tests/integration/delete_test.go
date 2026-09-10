@@ -487,7 +487,7 @@ func TestIT19_EventChainReconstructable(t *testing.T) {
 	a := decodeUpload(t, wa)
 	waitForTaskStatus(t, h.DB, a.TaskID, "done")
 
-	// B：失败（LLM 挂起 → 50001）→ 手动重试 → 成功（7 事件跨两轮，详设 §7.1/§9）。
+// B：前两轮 LLM 失败自动退避，第三轮耗尽后手动重试成功；验证跨自动/人工轮次的事件链。
 	h.Fake.SetMode(llm.FakeModeHang)
 	wb := doUpload(t, h.Router, formPart{field: "file", filename: "it19-b.wav", content: append(contentOf(1023), 'b')})
 	if wb.Code != http.StatusAccepted {
@@ -520,9 +520,11 @@ func TestIT19_EventChainReconstructable(t *testing.T) {
 	assertChain(t, "A", chainA,
 		[]string{"task_created", "task_claimed", "transcription_completed", "task_completed"},
 		[]int{1, 1, 1, 1})
-	// B 链：严格递增 1..8，attempt 首轮（含 summarizing 失败）1、新一轮 2。
+	// B 链：两次自动调度（attempt 1/2），第三轮终态失败，再由人工开启第 4 轮。
 	assertChain(t, "B", chainB,
-		[]string{"task_created", "task_claimed", "transcription_completed", "task_failed",
-			"task_retry_accepted", "task_claimed", "transcription_completed", "task_completed"},
-		[]int{1, 1, 1, 1, 2, 2, 2, 2})
+		[]string{"task_created", "task_claimed", "transcription_completed", "task_auto_retry_scheduled",
+			"task_claimed", "transcription_completed", "task_auto_retry_scheduled", "task_claimed",
+			"transcription_completed", "task_failed", "task_retry_accepted", "task_claimed",
+			"transcription_completed", "task_completed"},
+		[]int{1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4})
 }

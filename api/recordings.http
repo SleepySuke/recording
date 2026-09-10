@@ -28,6 +28,11 @@ Content-Type: audio/wav
 ### 阶段：pending → transcribing → summarizing → done；失败 → failed
 GET {{base_url}}/v1/tasks/{{task_id}}
 
+### 2b. 摘要 SSE：浏览器、curl -N 或支持 event-stream 的客户端执行。
+### 首先收到 status；完成为 summary，自动重试耗尽为 failed，删除为 deleted。
+GET {{base_url}}/v1/recordings/{{recording_id}}/summary/stream
+Accept: text/event-stream
+
 ### 3. 录音详情（done 后 transcript 与 result.summary/key_points/todos 非 null）
 ### 预期：transcript 以 [mock-asr] 开头；摘要不会对应测试 WAV 的中文内容，直到接入真实 ASR。
 GET {{base_url}}/v1/recordings/{{recording_id}}

@@ -11,8 +11,9 @@
 | 录音上传与本地存储 | 已实现 | 支持 `wav`、`mp3`、`m4a`、`aac`，单文件最大 50 MiB；相同完整内容复用已有任务 |
 | 异步处理 | 已实现 | 3 个 worker；MySQL `SKIP LOCKED` 认领任务，支持进程重启恢复 |
 | 任务和录音查询 | 已实现 | 任务进度、分页列表、完成后的转写文本和结构化摘要 |
-| 失败重试与删除 | 已实现 | 仅失败任务可手动重试；删除会取消在途处理并清理关联数据 |
+| 失败重试与删除 | 已实现 | 每批最多 3 次自动指数退避；耗尽后可手动重试；删除会取消在途处理并清理关联数据 |
 | LLM 摘要 | 已实现 | OpenAI 兼容适配器，严格校验 `summary`、`key_points`、`todos` 三个字段 |
+| LLM 事件流 | 已实现 | SSE 实时推送任务阶段、自动重试等待与最终摘要；`/ui` 已接入展示 |
 | 自动化验证 | 已实现 | 单元、MySQL 集成、过程级 golden E2E，以及 compose 全栈冒烟 |
 
 当前部署边界是**单应用实例 + MySQL + 本地文件存储**。如果要横向扩容，需要先引入任务租约和共享文件存储。默认恢复策略会重新执行中断的摘要任务，因此在异常重启时可能产生一次额外的 LLM 调用。
@@ -91,14 +92,14 @@ make dev
 MOCK_ASR_DELAY=100ms
 ```
 
-然后重启服务。此模式下 Mock ASR 固定延迟后恒成功，且**只根据任务 ID**生成转写文本。因此，下面的文件只是一个非空、扩展名正确的占位文件，不需要是真实音频：
+然后重启服务。此模式下 Mock ASR 固定延迟后恒成功，且**只根据任务 ID**生成转写文本。以下命令直接使用仓库已有的测试录音 `api/llm-smoke-demo.wav`（即 `file:///Users/suke/Golang/recording-transcription/api/llm-smoke-demo.wav`）作为输入；在仓库根目录执行：
 
 ```bash
-printf 'demo recording bytes\n' > /tmp/meeting.wav
-
 curl -sS -X POST http://localhost:8080/v1/recordings \
-  -F 'file=@/tmp/meeting.wav;type=audio/wav'
+  -F 'file=@api/llm-smoke-demo.wav;type=audio/wav'
 ```
+
+这里使用的是当前仓库已有的数据文件，不会临时生成占位内容。由于当前 ASR 是 Mock，上传字节用于验证文件接收、存储和异步任务链路；Mock 生成的 transcript 并不依据该音频的语义内容。
 
 响应形如：
 
@@ -136,16 +137,16 @@ curl -sS http://localhost:8080/v1/recordings/<recording_id>
 | --- | --- | --- |
 | 不设置 `MOCK_ASR_DELAY` | 每个任务按 task ID 固定地等待 5–14.9 秒；约 20% 任务失败，重试仍会得到相同结果 | 观察接近生产的随机性和失败分支 |
 | `MOCK_ASR_DELAY=100ms` | 固定延迟、恒成功 | 验证成功主链路，推荐默认使用 |
-| `MOCK_ASR_DELAY=100ms` 与 `MOCK_ASR_FAIL_FIRST=true` | 每个任务首轮转写失败（`40001`），手动重试后成功 | 演示 `failed → retry → done` |
+| `MOCK_ASR_DELAY=100ms` 与 `MOCK_ASR_FAIL_FIRST=true` | 每个任务首轮转写失败（`40001`），1 秒退避后自动从 attempt 2 成功 | 演示自动重试与 SSE |
 
-示例：验证重试。先设置最后一种配置并重启；上传占位 `.wav`，轮询到 `failed` 后执行：
+自动重试在前两轮失败后等待 1 秒、2 秒；任务查询会显示 `status=pending`、递增的 `attempt` 与 `next_retry_at`。第三轮仍失败才会进入 `failed`，此时可手动启动下一批：
 
 ```bash
 curl -i -X POST http://localhost:8080/v1/tasks/<task_id>/retry
 curl -sS http://localhost:8080/v1/tasks/<task_id>
 ```
 
-第二轮的 `attempt` 会从 `1` 增至 `2`，最终状态应为 `done`。
+手动重试会将 `attempt` 再加一；成功后状态为 `done`。
 
 FakeLLM 不需要也不能通过 `.env` 直接启用。它是 Go 测试中的本地 HTTP 服务器，真实摘要客户端会向它发请求。其覆盖场景和实现可见 [LLM 单元测试](tests/unit/llm_test.go) 与 [FakeLLM](internal/infrastructure/llm/fake.go)。
 
@@ -192,7 +193,7 @@ curl -i -X DELETE "http://localhost:8080/v1/recordings/<recording_id>"
 4. 使用“任务重试”验证失败任务的第二轮处理；需要稳定复现时，将 `MOCK_ASR_DELAY=100ms` 与 `MOCK_ASR_FAIL_FIRST=true` 写入 `.env` 后重启当前服务。
 5. 使用“录音列表”检查分页和状态汇总；使用“删除录音”清理手工测试数据。
 
-`/ui` 是开发联调辅助页面。它会调用六个 API，适合检查完整响应；协议级请求、响应和变量占位可使用 [`api/recordings.http`](api/recordings.http)。Postman 用户可直接导入 [`api/recordings.postman_collection.json`](api/recordings.postman_collection.json)，上传后将响应中的两个 ID 填入 Collection Variables 即可继续执行其他请求。
+`/ui` 是开发联调辅助页面。上传后它会同时轮询任务并订阅 SSE，显示 `status`、自动重试等待、`summary`、`failed` 或 `deleted` 事件；摘要内容来自真实落库结果。协议级请求、响应和变量占位可使用 [`api/recordings.http`](api/recordings.http)。
 
 ## API 概览
 
@@ -202,9 +203,22 @@ curl -i -X DELETE "http://localhost:8080/v1/recordings/<recording_id>"
 | `GET /v1/tasks/{task_id}` | 查询处理状态、执行轮次和异步错误 |
 | `GET /v1/recordings` | 分页列表；`page` 默认 1，`page_size` 默认 20、最大 100 |
 | `GET /v1/recordings/{id}` | 读取录音详情；完成后包含转写与结构化摘要 |
+| `GET /v1/recordings/{id}/summary/stream` | SSE：发送 `status`、最终 `summary`、`failed` 或 `deleted`；连接存活时有 `ping` |
 | `POST /v1/tasks/{task_id}/retry` | 重试失败任务；其他状态返回 `409` |
 | `DELETE /v1/recordings/{id}` | 取消处理并删除录音、任务及事件数据；成功返回 `204` |
 | `GET /healthz` / `GET /readyz` | 进程存活 / 服务就绪检查 |
+
+### 上传幂等
+
+服务在文件通过格式和大小校验后计算完整文件内容的 SHA-256。相同内容的并发或重复上传会复用同一条**未删除**录音及其转写任务，不会重复创建任务或再次投递 worker；文件名、`Content-Type` 和上传时间不参与判定。
+
+| 场景 | HTTP 响应 | `idempotent_reused` | 结果 |
+| --- | --- | --- | --- |
+| 首次上传某份内容 | `202 Accepted` | `false` | 创建录音、任务和任务创建事件，并投递 worker |
+| 再次上传相同内容 | `202 Accepted` | `true` | 返回已有的 `recording_id`、`task_id` 和当前任务状态；本次临时对象会被删除 |
+| 相同内容正在删除 | `202 Accepted` | `false` | 新建录音和任务；不复用删除中的资源 |
+
+响应中的 `recording_id` 与 `task_id` 是后续查询详情和轮询任务状态所需的标识。有关锁顺序、删除竞态和文件补偿的完整约束见[上传幂等设计](docs/design/upload-idempotency.md)。
 
 失败请求使用统一结构：
 
@@ -240,7 +254,7 @@ make test
 
 ## 数据与运维说明
 
-数据库包含 `recordings`、`tasks` 和 `task_events` 三张表；建表迁移在 [migrations/0001_init.sql](migrations/0001_init.sql)，服务启动时只前滚执行。音频字节默认写入 `DATA_DIR`，日志默认写入 `logs/app.jsonl`。
+数据库包含 `recordings`、`tasks`、`task_events` 三张业务表，以及用于串行化同一内容上传与删除竞态的 `recording_hash_locks` 基础设施表。初始建表在 [migrations/0001_init.sql](migrations/0001_init.sql)；[0002](migrations/0002_upload_idempotency.sql) 增加哈希锁， [0003](migrations/0003_automatic_retry.sql) 增加持久化自动重试时间与到期认领索引。服务启动时只前滚执行，测试数据库会在测试启动时自动应用全部迁移。音频字节默认写入 `DATA_DIR`，日志默认写入 `logs/app.jsonl`。
 
 | 命令 | 作用 |
 | --- | --- |
@@ -256,6 +270,48 @@ make test
 
 - [架构设计](docs/design/architecture.md)：组件、时序、状态机、数据模型和部署拓扑。
 - [技术设计](docs/design/technical-design.md)：并发认领、事务、删除、恢复、错误码和 LLM 适配器约定。
+- [上传幂等设计](docs/design/upload-idempotency.md)：内容哈希复用、锁顺序、删除竞态与文件补偿。
+- [自动重试与摘要事件流设计](docs/design/retry-and-summary-stream.md)：退避、跨重启语义和 SSE 事件契约。
 - [测试设计](docs/design/test-design.md)：测试分层、替身设施、用例和 golden 比对。
 - [HTTP 请求示例](api/recordings.http)：六个 API 的手工调试请求。
 - [初始迁移](migrations/0001_init.sql)：三张表的定义和索引。
+- [上传幂等迁移](migrations/0002_upload_idempotency.sql)：哈希锁表和内容哈希索引。
+
+## P0 完整性、摘要契约与已知边界
+
+以下按需求范围复核。Mock ASR 是允许的 P0 实现；鉴权、高并发优化和公网部署不在 P0 范围内。结论是：**P0 功能和必交材料均已完成**；公网部署是唯一未实现的可选项，且本次不进行部署。
+
+| P0 项目 | 完成证据 | 状态 |
+| --- | --- | --- |
+| 六个核心 API（上传、任务、列表、详情、重试、删除） | Gin 路由、`api/recordings.http`、单元/集成/E2E | 完成 |
+| 上传即返与异步流水线 | MySQL 任务表、3 worker、`SKIP LOCKED` 认领、条件更新 | 完成 |
+| Mock 转写与真实 LLM 摘要 | 可配置 Mock ASR；OpenAI 兼容 MiMo 适配器；真实渠道人工烟测与 FakeLLM 自动测试 | 完成 |
+| 生命周期可靠性 | 事件同事务写入、启动恢复、删除取消、自动重试与手动重试 | 完成 |
+| 统一错误、日志、迁移、启动与调试材料 | 数字错误码、JSON 日志、三条前滚迁移、Makefile/Compose、README | 完成 |
+| 验证 | 单元、真实 MySQL 集成、golden E2E、compose 冒烟；门禁包含 `-race` | 完成 |
+
+### 摘要格式化契约
+
+摘要已作为 `tasks.summary_json` 的 JSON 对象持久化；录音详情的 `result` 和 SSE 的 `summary` 事件都返回同一个格式化结构，而不是字符串或数组：
+
+```json
+{
+  "summary": "非空摘要文本",
+  "key_points": ["非空要点"],
+  "todos": ["非空待办"]
+}
+```
+
+解析器拒绝 `null`、缺字段、额外字段、字段类型错误、空字符串元素、Markdown 围栏、前后混入文本及多个 JSON 值；`key_points` 和 `todos` 可合法为空数组。`/ui` 将该对象分别渲染为摘要、要点和待办，而不会把数组直接输出为未格式化文本。
+
+### 已知边界与后续项
+
+| 项目 | 当前实现与影响 | 后续条件 |
+| --- | --- | --- |
+| 音频转写语义 | Mock ASR 的 transcript 由任务 ID 派生，**不代表上传音频的实际内容**；现有 `.wav` 用于验证上传、存储和流水线 | 接入真实 ASR 后，以真实音频重新验收语义质量，并增加格式魔数和时长护栏 |
+| LLM 事件流语义 | SSE 推送已落库的任务阶段与最终结构化摘要；不是供应商逐 token 输出，因为当前 LLM 适配器获取完整响应 | 若接入供应商 token stream，再单独设计背压、断线和持久化边界 |
+| 单实例部署 | 本地文件存储与无任务租约只支持单应用实例 | 横向扩容前引入共享对象存储和任务租约 |
+| 重启期间的模型调用 | 启动恢复可能重新执行中断的摘要，极端情况下会增加一次 LLM 调用成本 | 若需严格的外部调用去重，增加供应商幂等键/执行账本 |
+| 简单公网部署 | 未部署公网；本地和单机 Docker Compose 可验收 | 按当前范围不做部署；后续需补环境隔离、密钥托管和公网观测 |
+
+继续扩展上述任一项前，应先更新对应设计文档的数据流、状态变化和测试映射，再创建开发任务并以 TDD 实施。

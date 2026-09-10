@@ -1,6 +1,7 @@
 package recording
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -14,7 +15,7 @@ type Summary struct {
 }
 
 // ParseSummary 严格校验并解析 LLM 结构化输出（详设 §9）：拒绝顶层 null、缺字段、
-// 字段为 null、类型错误、元素空串、Markdown 围栏与混入文本、多个 JSON 值；允许空数组。
+// 字段为 null、类型错误、额外字段、元素空串、Markdown 围栏与混入文本、多个 JSON 值；允许空数组。
 // 缺字段与合法空数组可区分：前者报错并指明字段名，后者解析成功。
 func ParseSummary(data []byte) (Summary, error) {
 	var probe any
@@ -31,7 +32,9 @@ func ParseSummary(data []byte) (Summary, error) {
 		KeyPoints *[]string `json:"key_points"`
 		Todos     *[]string `json:"todos"`
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&raw); err != nil {
 		return Summary{}, fmt.Errorf("%w: %s", ErrSummaryInvalid, err)
 	}
 	switch {

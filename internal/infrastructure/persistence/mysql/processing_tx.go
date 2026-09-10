@@ -48,7 +48,7 @@ func (t *ProcessingTxGORM) ClaimNext(ctx context.Context) (*ports.ClaimedExecuti
 	// FOR UPDATE SKIP LOCKED：被其他 worker 锁住的候选直接跳过（详设 §4.3）。
 	var task TaskPO
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-		Where("status = ?", string(domain.StatusPending)).
+		Where("status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)", string(domain.StatusPending), time.Now().UTC()).
 		Order("created_at, id").
 		First(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -90,10 +90,13 @@ func (t *ProcessingTxGORM) ClaimNext(ctx context.Context) (*ports.ClaimedExecuti
 	res := tx.Model(&TaskPO{}).
 		Where("id = ? AND attempt = ? AND status = ?", task.ID, task.Attempt, string(domain.StatusPending)).
 		Updates(map[string]any{
-			"status":     string(domain.StatusTranscribing),
-			"event_seq":  domTask.EventSeq,
-			"updated_at": now,
-			"started_at": now,
+			"status":        string(domain.StatusTranscribing),
+			"next_retry_at": nil,
+			"error_code":    nil,
+			"error_message": "",
+			"event_seq":     domTask.EventSeq,
+			"updated_at":    now,
+			"started_at":    now,
 		})
 	if res.Error != nil {
 		_ = tx.Rollback().Error
@@ -341,7 +344,7 @@ func (t *ProcessingTxGORM) CompleteTask(ctx context.Context, key domain.Executio
 	return nil
 }
 
-// FailTask 事务③（详设 §4.1 transcribing/summarizing→failed、§4.4/§7.3，架构 §3）：
+// FailTask 事务③：失败一、二轮时持久化为 pending 并按 1s、2s 退避；第三轮才 failed。
 // 锁任务 → 校验 attempt 与在途状态（transcribing/summarizing 均可失败，转写失败 40001
 // 与 LLM 失败 50001~50003 共用）→ 锁录音确认未删除 → 条件更新写 error_code/error_message
 // 并落 failed（finished_at 同批）→ 同事务 task_failed → COMMIT。条件未命中返回
@@ -395,15 +398,40 @@ func (t *ProcessingTxGORM) FailTask(ctx context.Context, key domain.ExecutionKey
 	domTask := domain.ProcessingTask{EventSeq: task.EventSeq}
 	seq := domTask.AllocateEventSeq()
 	now := time.Now().UTC()
+	autoRetry := task.Attempt < 3
+	to := domain.StatusFailed
+	eventKind := domain.EventTaskFailed
+	level := domain.LevelError
+	nextAttempt := task.Attempt
+	var nextRetryAt *time.Time
+	details := map[string]any(nil)
+	if autoRetry {
+		to = domain.StatusPending
+		eventKind = domain.EventTaskAutoRetryScheduled
+		level = domain.LevelWarn
+		nextAttempt++
+		delay := time.Second << (task.Attempt - 1)
+		at := now.Add(delay)
+		nextRetryAt = &at
+		details = map[string]any{"next_attempt": nextAttempt, "retry_after_ms": delay.Milliseconds()}
+	}
+	var finishedAt any
+	if !autoRetry {
+		finishedAt = now
+	}
 	res := tx.Model(&TaskPO{}).
 		Where("id = ? AND attempt = ? AND status = ?", key.TaskID, key.Attempt, string(fromStatus)).
 		Updates(map[string]any{
-			"status":        string(domain.StatusFailed),
+			"status":        string(to),
+			"attempt":       nextAttempt,
 			"error_code":    int(code),
 			"error_message": msg,
+			"next_retry_at": nextRetryAt,
+			"transcript":    "",
+			"summary_json":  nil,
 			"event_seq":     domTask.EventSeq,
 			"updated_at":    now,
-			"finished_at":   now,
+			"finished_at":   finishedAt,
 		})
 	if res.Error != nil {
 		_ = tx.Rollback().Error
@@ -414,7 +442,7 @@ func (t *ProcessingTxGORM) FailTask(ctx context.Context, key domain.ExecutionKey
 		return ports.ErrStaleExecution
 	}
 
-	to, stage := domain.StatusFailed, string(fromStatus)
+	stage := string(fromStatus)
 	codeInt := int(code)
 	event := domain.TaskEvent{
 		EventID:          uuid.New(),
@@ -422,9 +450,9 @@ func (t *ProcessingTxGORM) FailTask(ctx context.Context, key domain.ExecutionKey
 		RecordingID:      task.RecordingID,
 		EventSeq:         seq,
 		Attempt:          key.Attempt,
-		Kind:             domain.EventTaskFailed,
+		Kind:             eventKind,
 		OccurredAt:       now,
-		Level:            domain.LevelError,
+		Level:            level,
 		FromStatus:       &fromStatus,
 		ToStatus:         &to,
 		Stage:            &stage,
@@ -432,6 +460,7 @@ func (t *ProcessingTxGORM) FailTask(ctx context.Context, key domain.ExecutionKey
 		InstanceID:       t.instanceID,
 		ErrorCode:        &codeInt,
 		ErrorMessage:     msg,
+		Details:          details,
 	}
 	if err := tx.Create(toTaskEventPO(event)).Error; err != nil {
 		_ = tx.Rollback().Error

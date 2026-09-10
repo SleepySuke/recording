@@ -191,6 +191,7 @@ func (t *RecordingTxGORM) RetryTask(ctx context.Context, taskID string) (int, er
 			"error_message": "",
 			"started_at":    nil,
 			"finished_at":   nil,
+			"next_retry_at": nil,
 			"event_seq":     domTask.EventSeq,
 			"updated_at":    now,
 		})

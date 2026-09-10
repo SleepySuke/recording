@@ -32,7 +32,7 @@ func TestUT04_ValidSummary(t *testing.T) {
 }
 
 // TestUT05_InvalidSummary —— 测试依据：测试设计 UT-05；设计依据：详设 §9。
-// 缺字段、null、元素空串、非字符串、Markdown 围栏、多个 JSON 值全部拒绝；
+// 缺字段、null、额外字段、元素空串、非字符串、Markdown 围栏、多个 JSON 值全部拒绝；
 // 且「缺字段」与「合法空数组」可区分：前者报错并指明字段名，后者通过。
 func TestUT05_InvalidSummary(t *testing.T) {
 	cases := []struct {
@@ -44,6 +44,7 @@ func TestUT05_InvalidSummary(t *testing.T) {
 		{"空载荷", ``, ""},
 		{"缺字段 key_points", `{"summary":"s","todos":[]}`, "key_points"},
 		{"字段为 null", `{"summary":"s","key_points":null,"todos":[]}`, "key_points"},
+		{"额外字段", `{"summary":"s","key_points":[],"todos":[],"extra":true}`, ""},
 		{"summary 为空串", `{"summary":"","key_points":[],"todos":[]}`, "summary"},
 		{"元素为空串", `{"summary":"s","key_points":["a",""],"todos":[]}`, "key_points"},
 		{"元素非字符串", `{"summary":"s","key_points":[1],"todos":[]}`, ""},

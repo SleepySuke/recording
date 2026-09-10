@@ -69,6 +69,7 @@ func New(logger *slog.Logger, upload *handler.UploadHandler, query *handler.Quer
 		r.GET("/v1/tasks/:id", query.HandleTask)
 		r.GET("/v1/recordings", query.HandleList)
 		r.GET("/v1/recordings/:id", query.HandleRecording)
+		r.GET("/v1/recordings/:id/summary/stream", query.HandleSummaryStream)
 	}
 	// 联调页（T14）：相对路径在本地（仓库根 go run）与容器（WORKDIR /app）下均命中
 	// ./static/index.html——Dockerfile 将 static/ 一并 COPY 进镜像。

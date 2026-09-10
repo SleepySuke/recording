@@ -44,6 +44,7 @@ type TaskPO struct {
 	UpdatedAt        time.Time  `gorm:"column:updated_at;autoUpdateTime"`
 	StartedAt        *time.Time `gorm:"column:started_at"`
 	FinishedAt       *time.Time `gorm:"column:finished_at"`
+	NextRetryAt      *time.Time `gorm:"column:next_retry_at"`
 }
 
 func (TaskPO) TableName() string { return "tasks" }

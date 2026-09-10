@@ -34,6 +34,7 @@ type TaskView struct {
 	CreatedAt   time.Time
 	StartedAt   *time.Time
 	FinishedAt  *time.Time
+	NextRetryAt *time.Time
 }
 
 // RecordingDetail 录音详情视图：任务视图全部字段 + 录音元数据与产物；
