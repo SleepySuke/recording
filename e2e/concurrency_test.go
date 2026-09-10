@@ -123,5 +123,5 @@ func TestE2E07_Concurrency(t *testing.T) {
 	runGolden(t, "E07", &a, nil)
 
 	// 不变量巡检（测试设计 §6，直接断言不进 golden）。
-	checkInvariants(t, h.DB, 0)
+	checkInvariants(t, h.DB)
 }

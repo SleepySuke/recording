@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"recording-transcription/internal/application/ports"
 	"recording-transcription/internal/application/processing"
@@ -62,17 +63,15 @@ func NewServer(cfg *Config) (*http.Server, *slog.Logger, func(), error) {
 	// 摘要适配器（详设 §9）：OpenAI 兼容渠道（T01 渠道记录：小米 MiMo）；
 	// 超时/响应体上限内建于适配器，llmCtx 在其内部自 taskCtx 派生（§3.4）。
 	summarizer := llm.New(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMAPIKey, cfg.LLMTimeout, llm.DefaultMaxResponseBytes)
-	processSvc := processing.NewProcessService(processingTx, query, transcriber, summarizer, worker.NewCancelTable(), logger)
+	// 取消表（详设 §3.4）：worker 登记 / 删除用例按 task 取消，共用同一实例。
+	cancelTable := worker.NewCancelTable()
+	processSvc := processing.NewProcessService(processingTx, query, transcriber, summarizer, cancelTable, logger)
 	pool := worker.NewPool(cfg.WorkerConcurrency, cfg.TaskPollInterval, processSvc.Process)
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	pool.Start(runCtx)
 	logger.Info("worker pool started",
 		slog.Int("workers", cfg.WorkerConcurrency),
 		slog.Duration("poll_interval", cfg.TaskPollInterval))
-	shutdown := func() {
-		cancelRun()
-		pool.Stop()
-	}
 
 	uploadSvc := apprec.NewUploadService(fileStore, recordingTx, pool, logger, instanceID)
 	uploadHandler := handler.NewUploadHandler(uploadSvc, logger, handler.UploadLimits{
@@ -83,10 +82,22 @@ func NewServer(cfg *Config) (*http.Server, *slog.Logger, func(), error) {
 	queryHandler := handler.NewQueryHandler(apprec.NewQueryService(query, logger), logger)
 	// 重试链（详设 §4.5）：RetryService 复用 recordingTx，COMMIT 后经 pool Notify 唤醒。
 	retryHandler := handler.NewRetryHandler(apprec.NewRetryService(recordingTx, pool, logger), logger)
+	// 删除链（T09，详设 §5.3）：DELETE 用例 + 低频清理循环（§10 CLEANUP_INTERVAL），
+	// 循环纳入 runCtx 与 shutdown 收口（随池 Stop 一并等待退出）。
+	deleteSvc := apprec.NewDeleteService(recordingTx, query, fileStore, cancelTable, logger, instanceID)
+	deleteHandler := handler.NewDeleteHandler(deleteSvc, logger)
+	cleanupWg := &sync.WaitGroup{}
+	worker.StartCleanup(runCtx, cleanupWg, cfg.CleanupInterval, deleteSvc.CleanupPending)
+	logger.Info("cleanup loop started", slog.Duration("interval", cfg.CleanupInterval))
+	shutdown := func() {
+		cancelRun()
+		pool.Stop()
+		cleanupWg.Wait()
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
-		Handler: httpapi.New(logger, uploadHandler, queryHandler, retryHandler),
+		Handler: httpapi.New(logger, uploadHandler, queryHandler, retryHandler, deleteHandler),
 	}
 	return srv, logger, shutdown, nil
 }

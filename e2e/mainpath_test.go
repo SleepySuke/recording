@@ -178,5 +178,5 @@ func TestE2E01_MainPath(t *testing.T) {
 	})
 
 	// 不变量巡检（测试设计 §6，直接断言不进 golden）：当前无删除功能，deleting 行应为 0。
-	checkInvariants(t, h.DB, 0)
+	checkInvariants(t, h.DB)
 }

@@ -1,0 +1,38 @@
+{
+  "upload": {
+    "http_status": 202,
+    "recording_id": "<recording_id>",
+    "task_id": "<task_id>",
+    "status": "pending"
+  },
+  "status_before_delete": "transcribing",
+  "delete": {
+    "http_status": 204
+  },
+  "task_after_delete": {
+    "http_status": 404,
+    "error": {
+      "code": 30001,
+      "message": "任务不存在"
+    }
+  },
+  "recording_after_delete": {
+    "http_status": 404,
+    "error": {
+      "code": 20005,
+      "message": "录音不存在"
+    }
+  },
+  "storage_dir_files": 0,
+  "table_counts": {
+    "recordings": 0,
+    "task_events": 0,
+    "tasks": 0
+  },
+  "mirror_events": [
+    "task_created",
+    "task_claimed",
+    "task_delete_requested",
+    "task_deleted"
+  ]
+}

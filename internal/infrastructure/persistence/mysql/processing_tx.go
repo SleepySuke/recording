@@ -260,6 +260,12 @@ func (t *ProcessingTxGORM) CompleteTask(ctx context.Context, key domain.Executio
 
 	var rec RecordingPO
 	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", task.RecordingID).First(&rec).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 录音行已被删除清理（T07 评审强修，与事务④同语义）：迟到结果静默丢弃，
+		// 不得当硬错误触发 §5.5 重试与停池。
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
 	if err != nil {
 		_ = tx.Rollback().Error
 		return fmt.Errorf("事务⑤锁定录音失败: %w", err)
@@ -366,6 +372,12 @@ func (t *ProcessingTxGORM) FailTask(ctx context.Context, key domain.ExecutionKey
 
 	var rec RecordingPO
 	err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", task.RecordingID).First(&rec).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 录音行已被删除清理（T07 评审强修，与事务④同语义）：迟到结果静默丢弃，
+		// 不得当硬错误触发 §5.5 重试与停池。
+		_ = tx.Rollback().Error
+		return ports.ErrStaleExecution
+	}
 	if err != nil {
 		_ = tx.Rollback().Error
 		return fmt.Errorf("事务③锁定录音失败: %w", err)

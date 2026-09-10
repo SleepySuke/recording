@@ -34,4 +34,17 @@ type RecordingTx interface {
 	// 行锁串行化并发 retry，同轮重复请求恰好一个成功；提交结果未知返回包装
 	// ErrCommitUnknown 的错误。
 	RetryTask(ctx context.Context, taskID string) (attempt int, err error)
+
+	// MarkDeleting 删除标记事务（详设 §5.3 步骤 1）：按 §4.2 锁序锁 tasks→recordings
+	// 行 → 录音不存在（含已被彻底清理）返回 ok=false（404/20005）→ 条件置
+	// deleting_at 并同事务追加 task_delete_requested 事件（序号在任务行锁内分配）。
+	// 已标记 deleting_at 同样返回 ok=true（幂等续做，不重复追加事件）；
+	// 提交结果未知返回包装 ErrCommitUnknown 的错误。
+	MarkDeleting(ctx context.Context, recordingID string) (taskID string, ok bool, err error)
+
+	// PurgeRecording 三表清理事务（详设 §5.3 步骤 4/§4.6）：同一事务按
+	// task_events → tasks → recordings 顺序显式 DELETE，任一步失败整体回滚；
+	// 提交结果未知返回包装 ErrCommitUnknown 的错误。行已不存在时各步影响 0 行，
+	// 幂等成功（重复 DELETE / 清理续做收敛）。
+	PurgeRecording(ctx context.Context, recordingID string) error
 }

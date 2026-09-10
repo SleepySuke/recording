@@ -163,7 +163,7 @@ func runRetryFlow(t *testing.T, caseName string, opts e2eOpts, inject, recover f
 		resp.RecordingID: "<recording_id>",
 		resp.TaskID:      "<task_id>",
 	})
-	checkInvariants(t, h.DB, 0)
+	checkInvariants(t, h.DB)
 }
 
 // TestE2E02_TranscribeFailThenRetryDone：转写失败→手动重试（测试设计 §5.2 E2E-02，
@@ -262,5 +262,5 @@ func TestE2E04_RetryConflictAndMissing(t *testing.T) {
 		resp.RecordingID: "<recording_id>",
 		resp.TaskID:      "<task_id>",
 	})
-	checkInvariants(t, h.DB, 0)
+	checkInvariants(t, h.DB)
 }

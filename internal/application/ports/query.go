@@ -78,3 +78,28 @@ type RecordingQuery interface {
 	// ListRecordings 分页列表：created_at DESC, id DESC；page 从 1 起，已校验合法。
 	ListRecordings(ctx context.Context, page, pageSize int) (RecordingList, error)
 }
+
+// DeletingQuery 删除清理视图查询端口（详设 §5.3）：与 RecordingQuery 分开声明，
+// 只被删除/清理用例消费（查询删除中行是对「过滤删除中资源」的唯一例外）；
+// 由同一 MySQL 查询适配器实现。
+type DeletingQuery interface {
+	// GetDeleting 取单个删除中录音的清理视图（删文件 + task_deleted 文件日志所需，
+	// 详设 §5.3/§7.5）；未标记/已清理 → found=false。删除中缺任务允许继续幂等清理
+	//（§4.6），此时 TaskID 为空串。
+	GetDeleting(ctx context.Context, recordingID string) (DeletingCleanup, bool, error)
+	// ListDeleting 全量删除中录音（deleting_at 非空），供低频清理循环扫描
+	//（详设 §5.3/§10）；按 deleting_at, id 稳定排序。
+	ListDeleting(ctx context.Context) ([]DeletingCleanup, error)
+}
+
+// DeletingCleanup 删除清理视图（详设 §5.3）：deleting_at 已提交、待删文件与
+// 三表清理的录音；Status/Attempt/EventSeq 供三表删除提交后的 task_deleted
+// 文件日志（最后 event_seq+1，详设 §7.5）。
+type DeletingCleanup struct {
+	RecordingID string
+	TaskID      string // 删除中缺任务时为空串（幂等清理继续，§4.6）
+	StoragePath string
+	Status      string // 任务当前状态（删除事件保持原状态，详设 §7.2）
+	Attempt     int
+	EventSeq    int64
+}

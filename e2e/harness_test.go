@@ -96,7 +96,10 @@ func newE2E(t *testing.T, opts e2eOpts) *e2eHarness {
 		LLMTimeout:      llmTimeout,
 		DBQueryTimeout:  3 * time.Second,
 		ShutdownTimeout: 20 * time.Second,
-		CleanupInterval: 30 * time.Second,
+		// 清理循环取大间隔：E2E 删除路径为同步完成（详设 §5.3），503-续做收敛已由
+		// 集成用例覆盖；大间隔避免巡检中途清扫直插种子（如 E2E-08 的 deleting 行）
+		// 造成采集抖动（语义仍为 §10 CLEANUP_INTERVAL 低频循环）。
+		CleanupInterval: time.Hour,
 		RecoveryMode:    "reset",
 	}
 
@@ -335,12 +338,31 @@ func contentOf(size int) []byte {
 	return append(out, pattern[:size%len(pattern)]...)
 }
 
+// doDelete 真实 HTTP DELETE /v1/recordings/:id（详设 §8.1），返回状态码与响应体原文。
+func (h *e2eHarness) doDelete(recordingID string) (int, []byte) {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, h.BaseURL+"/v1/recordings/"+recordingID, nil)
+	if err != nil {
+		h.t.Fatalf("构造 DELETE 请求失败: %v", err)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		h.t.Fatalf("DELETE 失败: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Fatalf("读取 DELETE 响应体失败: %v", err)
+	}
+	return resp.StatusCode, body
+}
+
 // checkInvariants 不变量巡检（测试设计 §6，R4）：每用例末尾对测试库断言——
 // 无孤儿任务、无重复 (task_id, event_seq)、无半删除残留。
-// wantDeletingRows：deleting_at 非空的 recordings 行数期望。当前无删除功能，
-// 正常用例应为 0；E2E-08 直插 1 条 deleting 种子故传 1（T09 交付删除后放宽为
-// 「清理完成后 deleting 行为 0」）。
-func checkInvariants(t *testing.T, db *gorm.DB, wantDeletingRows int64) {
+// T09 放宽半删除语义（T06E 注释的既定放宽）：deleting_at 行可以合法存在
+// （标记待清理，详设 §5.3），但三表清理是原子的——不允许「deleting_at 录音已丢
+// 任务行」的半删除残留；孤儿检查继续覆盖任务侧。
+func checkInvariants(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	var orphans int64
 	if err := db.Raw(
@@ -362,12 +384,14 @@ func checkInvariants(t *testing.T, db *gorm.DB, wantDeletingRows int64) {
 		t.Errorf("不变量违规：%d 组 (task_id, event_seq) 重复", dupSeq)
 	}
 
-	var deleting int64
-	if err := db.Raw(`SELECT COUNT(*) FROM recordings WHERE deleting_at IS NOT NULL`).Scan(&deleting).Error; err != nil {
+	var halfPurged int64
+	if err := db.Raw(
+		`SELECT COUNT(*) FROM recordings r LEFT JOIN tasks t ON t.recording_id = r.id WHERE r.deleting_at IS NOT NULL AND t.id IS NULL`,
+	).Scan(&halfPurged).Error; err != nil {
 		t.Fatalf("半删除巡检失败: %v", err)
 	}
-	if deleting != wantDeletingRows {
-		t.Errorf("deleting_at 非空行数 = %d, want %d（当前无删除功能，正常应为 0；T09 后放宽语义）", deleting, wantDeletingRows)
+	if halfPurged != 0 {
+		t.Errorf("不变量违规：%d 条半删除残留（deleting_at 录音已丢任务行，三表清理应原子）", halfPurged)
 	}
 }
 

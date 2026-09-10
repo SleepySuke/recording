@@ -68,6 +68,10 @@ func insertTaskState(t *testing.T, db *gorm.DB, n int, status string, deleting b
 	var startedAt, finishedAt any
 	lastEvent, fromStatus, toStatus := "task_claimed", "pending", "transcribing"
 	switch status {
+	case "summarizing": // T09 删除用例预置（详设 §4.1 transcribing→summarizing 出边形态）
+		transcript = fmt.Sprintf("旧轮正文-%d", n)
+		startedAt = createdAt.Add(2 * time.Second)
+		lastEvent, fromStatus, toStatus = "transcription_completed", "transcribing", "summarizing"
 	case "failed":
 		transcript = fmt.Sprintf("旧轮正文-%d", n)
 		summaryJSON = fmt.Sprintf(`{"summary":"旧轮摘要-%d","key_points":[],"todos":[]}`, n)

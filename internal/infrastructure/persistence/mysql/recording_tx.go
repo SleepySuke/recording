@@ -168,6 +168,139 @@ func (t *RecordingTxGORM) RetryTask(ctx context.Context, taskID string) (int, er
 	return fresh.Attempt, nil
 }
 
+// MarkDeleting 删除标记事务（详设 §5.3 步骤 1）：先无锁查关联任务（tasks.recording_id
+// UNIQUE，至多一条）→ 按 §4.2 锁序锁 tasks→recordings 行 → 录音不存在返回 ok=false；
+// 已标记 deleting_at 幂等返回 ok=true（不重复追加事件，供重复 DELETE 续做）→
+// 条件置 deleting_at + 同事务 task_delete_requested 事件（删除事件保持原状态，
+// §7.2）+ 任务行 event_seq 推进（§7.2 序号分配器）→ COMMIT 后镜像事件。
+func (t *RecordingTxGORM) MarkDeleting(ctx context.Context, recordingID string) (string, bool, error) {
+	// 无锁预查任务 ID 仅为确定锁序入口；并发删除/清理使其过期时，行锁 NotFound 兜底。
+	var taskID string
+	if err := t.db.WithContext(ctx).Raw(
+		"SELECT id FROM tasks WHERE recording_id = ?", recordingID).Scan(&taskID).Error; err != nil {
+		return "", false, fmt.Errorf("查询关联任务失败: %w", err)
+	}
+
+	tx := t.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return "", false, fmt.Errorf("开启删除标记事务失败: %w", tx.Error)
+	}
+
+	var task TaskPO
+	haveTask := false
+	if taskID != "" {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", taskID).First(&task).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 任务已被并发清理删除：录音随三表清理同去 → 404 语义（详设 §4.6）。
+			_ = tx.Rollback().Error
+			return "", false, nil
+		}
+		if err != nil {
+			_ = tx.Rollback().Error
+			return "", false, fmt.Errorf("删除标记锁定任务失败: %w", err)
+		}
+		haveTask = true
+	}
+
+	var rec RecordingPO
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", recordingID).First(&rec).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		_ = tx.Rollback().Error
+		return "", false, nil // 不存在/已完全删除（详设 §5.3 Exists 分支）
+	}
+	if err != nil {
+		_ = tx.Rollback().Error
+		return "", false, fmt.Errorf("删除标记锁定录音失败: %w", err)
+	}
+	if rec.DeletingAt != nil {
+		// 幂等续做：已标记不重复追加 task_delete_requested（详设 §5.3）。
+		_ = tx.Rollback().Error
+		return task.ID, true, nil
+	}
+
+	now := time.Now().UTC()
+	res := tx.Model(&RecordingPO{}).
+		Where("id = ? AND deleting_at IS NULL", recordingID).
+		Updates(map[string]any{"deleting_at": now, "updated_at": now})
+	if res.Error != nil {
+		_ = tx.Rollback().Error
+		return "", false, fmt.Errorf("置 deleting_at 失败: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		// 行锁内理论上不会发生；防御并发标记者 → 幂等续做。
+		_ = tx.Rollback().Error
+		return task.ID, true, nil
+	}
+
+	if haveTask {
+		// 事件序号在任务行锁内分配（详设 §7.2/§7.3）；删除事件保持原状态（§7.2）。
+		domTask := domain.ProcessingTask{EventSeq: task.EventSeq}
+		seq := domTask.AllocateEventSeq()
+		if err := tx.Model(&TaskPO{}).Where("id = ?", task.ID).
+			Updates(map[string]any{"event_seq": domTask.EventSeq, "updated_at": now}).Error; err != nil {
+			_ = tx.Rollback().Error
+			return "", false, fmt.Errorf("推进任务 event_seq 失败: %w", err)
+		}
+		from, to := domain.TaskStatus(task.Status), domain.TaskStatus(task.Status)
+		event := domain.TaskEvent{
+			EventID:          uuid.New(),
+			TaskID:           task.ID,
+			RecordingID:      rec.ID,
+			EventSeq:         seq,
+			Attempt:          task.Attempt,
+			Kind:             domain.EventTaskDeleteRequested,
+			OccurredAt:       now,
+			Level:            "INFO",
+			FromStatus:       &from,
+			ToStatus:         &to,
+			CreatedRequestID: task.CreatedRequestID,
+			InstanceID:       t.instanceID,
+		}
+		if err := tx.Create(toTaskEventPO(event)).Error; err != nil {
+			_ = tx.Rollback().Error
+			return "", false, fmt.Errorf("写入 task_delete_requested 事件失败: %w", err)
+		}
+		if err := tx.Commit().Error; err != nil {
+			return "", false, fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
+		}
+		logging.MirrorEvent(t.logger, event)
+		return task.ID, true, nil
+	}
+
+	// 无任务行的删除中录音（§4.6 清理容忍路径）：只置标记，无事件可写。
+	if err := tx.Commit().Error; err != nil {
+		return "", false, fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
+	}
+	return "", true, nil
+}
+
+// PurgeRecording 三表清理事务（详设 §5.3 步骤 4/§4.6）：同一事务按
+// task_events → tasks → recordings 显式 DELETE，任一步失败整体回滚（无半删除）；
+// 行已不存在时各步影响 0 行，幂等成功。COMMIT 结果未知返回包装 ErrCommitUnknown
+// 的错误（调用方保留 deleting_at 标记续做）。
+func (t *RecordingTxGORM) PurgeRecording(ctx context.Context, recordingID string) error {
+	tx := t.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("开启三表清理事务失败: %w", tx.Error)
+	}
+	if err := tx.Where("recording_id = ?", recordingID).Delete(&TaskEventPO{}).Error; err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("清理 task_events 失败: %w", err)
+	}
+	if err := tx.Where("recording_id = ?", recordingID).Delete(&TaskPO{}).Error; err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("清理 tasks 失败: %w", err)
+	}
+	if err := tx.Where("id = ?", recordingID).Delete(&RecordingPO{}).Error; err != nil {
+		_ = tx.Rollback().Error
+		return fmt.Errorf("清理 recordings 失败: %w", err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
+	}
+	return nil
+}
+
 func toRecordingPO(r domain.Recording) *RecordingPO {
 	return &RecordingPO{
 		ID:               r.ID,

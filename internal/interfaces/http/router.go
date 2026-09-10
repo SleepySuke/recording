@@ -13,8 +13,9 @@ import (
 
 // New 构建 Gin 引擎并注册健康接口。upload 非 nil 时挂载 POST /v1/recordings（T04）；
 // query 非 nil 时挂载三个只读查询接口（T05，详设 §8.1）；retry 非 nil 时挂载
-// POST /v1/tasks/:id/retry（T08，详设 §8.1）；删除接口随 T09 挂载。
-func New(logger *slog.Logger, upload *handler.UploadHandler, query *handler.QueryHandler, retry *handler.RetryHandler) *gin.Engine {
+// POST /v1/tasks/:id/retry（T08，详设 §8.1）；delete 非 nil 时挂载
+// DELETE /v1/recordings/:id（T09，详设 §8.1/§5.3）。
+func New(logger *slog.Logger, upload *handler.UploadHandler, query *handler.QueryHandler, retry *handler.RetryHandler, delete *handler.DeleteHandler) *gin.Engine {
 	r := gin.New()
 	r.Use(
 		middleware.RequestID(),
@@ -47,6 +48,9 @@ func New(logger *slog.Logger, upload *handler.UploadHandler, query *handler.Quer
 	}
 	if retry != nil {
 		r.POST("/v1/tasks/:id/retry", retry.Handle)
+	}
+	if delete != nil {
+		r.DELETE("/v1/recordings/:id", delete.Handle)
 	}
 	return r
 }

@@ -45,3 +45,20 @@ func (t *CancelTable) Cancel(key domain.ExecutionKey) {
 		cancel()
 	}
 }
+
+// CancelTask 按 task_id 取消该任务全部在途执行（详设 §3.4/§5.3）：删除用例只知
+// task_id（attempt 由在途 worker 持有），表内同 task 至多一个有效执行键
+// （单写者不变量，详设 §4.1）；收集后在锁外调用，不持内存锁访问数据库或网络。
+func (t *CancelTable) CancelTask(taskID string) {
+	t.mu.Lock()
+	var cancels []context.CancelFunc
+	for key, cancel := range t.cancels {
+		if key.TaskID == taskID {
+			cancels = append(cancels, cancel)
+		}
+	}
+	t.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}

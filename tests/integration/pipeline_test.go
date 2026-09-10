@@ -23,6 +23,7 @@ import (
 	"recording-transcription/internal/infrastructure/asr/mock"
 	"recording-transcription/internal/infrastructure/filestore/local"
 	"recording-transcription/internal/infrastructure/llm"
+	"recording-transcription/internal/infrastructure/logging"
 	"recording-transcription/internal/infrastructure/persistence/mysql"
 	"recording-transcription/internal/infrastructure/worker"
 	httpapi "recording-transcription/internal/interfaces/http"
@@ -42,13 +43,15 @@ type PipelineHarness struct {
 	Router  *gin.Engine
 	Pool    *worker.Pool
 	DataDir string
+	LogDir  string       // WithFileLogging 时非空（app.jsonl 断言用，T09）
 	Fake    *llm.FakeLLM // LLM 替身（默认 normal；IT-14 逐例切换模式）
 }
 
 // NewPipelineHarness 组装并启动 3 worker 池（20ms 快轮询加速测试，唤醒语义与生产一致）；
 // 转写用确定性替身（0 延迟、不失败，测试设计 §2「不等待、不碰运气」），可用
-// WithFailFirstASR() 切换为「每个 task_id 首次失败」（T08 重试用例）。
-// 生命周期挂 t.Cleanup：关闭 FakeLLM、取消 runCtx 并 Stop 等待 worker 退出。
+// WithFailFirstASR() 切换为「每个 task_id 首次失败」（T08 重试用例）、WithFileLogging()
+// 把日志写进临时目录（T09 删除用例断言文件日志镜像）。
+// 生命周期挂 t.Cleanup：关闭 FakeLLM、取消 runCtx、Stop 池并等清理循环退出。
 func NewPipelineHarness(t *testing.T, opts ...PipelineOpt) *PipelineHarness {
 	t.Helper()
 	var conf pipelineConf
@@ -58,6 +61,17 @@ func NewPipelineHarness(t *testing.T, opts ...PipelineOpt) *PipelineHarness {
 	gin.SetMode(gin.TestMode)
 	db := RequireTestDB(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var logDir string
+	if conf.fileLog {
+		logDir = t.TempDir()
+		fileLogger, err := logging.New(logging.Options{
+			Dir: logDir, Level: "INFO", MaxSizeMB: 20, MaxBackups: 5, MaxAgeDays: 7,
+		})
+		if err != nil {
+			t.Fatalf("初始化文件日志失败: %v", err)
+		}
+		logger = fileLogger
+	}
 
 	dataDir := t.TempDir()
 	store, err := local.New(dataDir, itMaxFileBytes, 512*1024*1024)
@@ -74,14 +88,11 @@ func NewPipelineHarness(t *testing.T, opts ...PipelineOpt) *PipelineHarness {
 	procTx := mysql.NewProcessingTx(db, itInstanceID, logger)
 	query := mysql.NewRecordingQuery(db)
 	transcriber := &mock.DeterministicTranscriber{FailFirst: conf.failFirstASR}
-	processSvc := processing.NewProcessService(procTx, query, transcriber, summarizer, worker.NewCancelTable(), logger)
+	cancelTable := worker.NewCancelTable()
+	processSvc := processing.NewProcessService(procTx, query, transcriber, summarizer, cancelTable, logger)
 	pool := worker.NewPool(3, 20*time.Millisecond, processSvc.Process)
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	pool.Start(runCtx)
-	t.Cleanup(func() {
-		cancelRun()
-		pool.Stop()
-	})
 
 	recordingTx := mysql.NewRecordingTx(db, itInstanceID, logger)
 	uploadSvc := apprec.NewUploadService(store, recordingTx, pool, logger, itInstanceID)
@@ -93,18 +104,34 @@ func NewPipelineHarness(t *testing.T, opts ...PipelineOpt) *PipelineHarness {
 	queryHandler := handler.NewQueryHandler(apprec.NewQueryService(query, logger), logger)
 	// T08 起挂载重试接口（详设 §8.1），与生产装配同构。
 	retryHandler := handler.NewRetryHandler(apprec.NewRetryService(recordingTx, pool, logger), logger)
+	// T09：删除链（详设 §5.3）+ 低频清理循环（50ms 间隔加速收敛，语义同 §10
+	// CLEANUP_INTERVAL 的生产循环）；循环纳入 runCtx 生命周期，t.Cleanup 一并收口。
+	deleteSvc := apprec.NewDeleteService(recordingTx, query, store, cancelTable, logger, itInstanceID)
+	deleteHandler := handler.NewDeleteHandler(deleteSvc, logger)
+	cleanupWg := &sync.WaitGroup{}
+	worker.StartCleanup(runCtx, cleanupWg, itCleanupInterval, deleteSvc.CleanupPending)
+	t.Cleanup(func() {
+		cancelRun()
+		pool.Stop()
+		cleanupWg.Wait()
+	})
 	return &PipelineHarness{
 		DB:      db,
-		Router:  httpapi.New(logger, uploadHandler, queryHandler, retryHandler),
+		Router:  httpapi.New(logger, uploadHandler, queryHandler, retryHandler, deleteHandler),
 		Pool:    pool,
 		DataDir: dataDir,
+		LogDir:  logDir,
 		Fake:    fake,
 	}
 }
 
+// itCleanupInterval 集成测试清理循环间隔（生产默认 30s，详设 §10；测试取 50ms 加速收敛）。
+const itCleanupInterval = 50 * time.Millisecond
+
 // pipelineConf / PipelineOpt 装配选项（T08 起按用例注入替身形态）。
 type pipelineConf struct {
 	failFirstASR bool
+	fileLog      bool
 }
 
 // PipelineOpt 流水线测试装配选项。
@@ -114,6 +141,11 @@ type PipelineOpt func(*pipelineConf)
 // （详设 §4.5：首轮 failed → 手动 retry → 新一轮成功）。
 func WithFailFirstASR() PipelineOpt {
 	return func(c *pipelineConf) { c.failFirstASR = true }
+}
+
+// WithFileLogging 日志写进临时目录（T09 删除用例断言 logs/app.jsonl 镜像事件）。
+func WithFileLogging() PipelineOpt {
+	return func(c *pipelineConf) { c.fileLog = true }
 }
 
 // newClaimEnv 只测认领协议（不起 worker 池）：真实 MySQL + ProcessingTx 适配器。

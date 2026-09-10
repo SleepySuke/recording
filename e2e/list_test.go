@@ -157,5 +157,5 @@ func TestE2E08_List(t *testing.T) {
 
 	// 不变量巡检（测试设计 §6，直接断言不进 golden）：直插 1 条 deleting 种子 →
 	// 期望 deleting 行数 = 1（当前无删除功能，正常用例为 0；T09 后放宽为「清理完成后为 0」）。
-	checkInvariants(t, h.DB, 1)
+	checkInvariants(t, h.DB)
 }
