@@ -39,12 +39,29 @@ import (
 // → 事务④ → 真实 LLM 适配器 → 进程内 FakeLLM → 事务⑤/③）：T08/T09 的流水线测试在此
 // 之上扩展（追加桩）。LLM 超时取 500ms：挂起分支快速触发 50001，正常分支不受影响。
 type PipelineHarness struct {
-	DB      *gorm.DB
-	Router  *gin.Engine
-	Pool    *worker.Pool
-	DataDir string
-	LogDir  string       // WithFileLogging 时非空（app.jsonl 断言用，T09）
-	Fake    *llm.FakeLLM // LLM 替身（默认 normal；IT-14 逐例切换模式）
+	DB         *gorm.DB
+	Router     *gin.Engine
+	Pool       *worker.Pool
+	ProcessSvc *processing.ProcessService // halted 等受控退出断言用（T10）
+	DataDir    string
+	LogDir     string       // WithFileLogging 时非空（app.jsonl 断言用，T09）
+	Fake       *llm.FakeLLM // LLM 替身（默认 normal；IT-14 逐例切换模式）
+
+	deleteSvc       *apprec.DeleteService
+	cleanupCtx      context.Context
+	cancelCleanup   context.CancelFunc
+	cleanupWg       *sync.WaitGroup
+	startCleanupRun sync.Once
+}
+
+// StartCleanupLoop 按需启动 50ms 低频清理循环（生产装配恒启动，详设 §10
+// CLEANUP_INTERVAL 语义；harness 默认不启动——后台 Purge 会抢在预置 deleting_at 种子
+// 的计数断言之前删行（TestIT07 竞态），只有真正断言清理收敛的用例显式调用）。
+// 幂等；随 t.Cleanup 收口。
+func (h *PipelineHarness) StartCleanupLoop() {
+	h.startCleanupRun.Do(func() {
+		worker.StartCleanup(h.cleanupCtx, h.cleanupWg, itCleanupInterval, h.deleteSvc.CleanupPending)
+	})
 }
 
 // NewPipelineHarness 组装并启动 3 worker 池（20ms 快轮询加速测试，唤醒语义与生产一致）；
@@ -85,12 +102,25 @@ func NewPipelineHarness(t *testing.T, opts ...PipelineOpt) *PipelineHarness {
 	t.Cleanup(fakeSrv.Close)
 	summarizer := llm.New(fakeSrv.URL, "it-model", "it-key", 500*time.Millisecond, llm.DefaultMaxResponseBytes)
 
-	procTx := mysql.NewProcessingTx(db, itInstanceID, logger)
+	var procTx ports.ProcessingTx = mysql.NewProcessingTx(db, itInstanceID, logger)
+	if conf.txWrap != nil { // T10 §5.5 注入：端口边界装饰 ProcessingTx
+		procTx = conf.txWrap(procTx)
+	}
 	query := mysql.NewRecordingQuery(db)
-	transcriber := &mock.DeterministicTranscriber{FailFirst: conf.failFirstASR}
+	transcriber := ports.Transcriber(&mock.DeterministicTranscriber{FailFirst: conf.failFirstASR})
+	if conf.panicFirstASR { // T10 IT-17 注入：首个转写调用 panic
+		transcriber = &panickingFirstTranscriber{inner: transcriber}
+	}
 	cancelTable := worker.NewCancelTable()
 	processSvc := processing.NewProcessService(procTx, query, transcriber, summarizer, cancelTable, logger)
-	pool := worker.NewPool(3, 20*time.Millisecond, processSvc.Process)
+	if conf.onHalt != nil { // 须在 pool.Start 前赋值（goroutine 创建边覆盖写）
+		processSvc.OnHalt = conf.onHalt
+	}
+	workers := conf.workers
+	if workers <= 0 {
+		workers = 3
+	}
+	pool := worker.NewPool(workers, 20*time.Millisecond, processSvc.Process)
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	pool.Start(runCtx)
 
@@ -104,24 +134,31 @@ func NewPipelineHarness(t *testing.T, opts ...PipelineOpt) *PipelineHarness {
 	queryHandler := handler.NewQueryHandler(apprec.NewQueryService(query, logger), logger)
 	// T08 起挂载重试接口（详设 §8.1），与生产装配同构。
 	retryHandler := handler.NewRetryHandler(apprec.NewRetryService(recordingTx, pool, logger), logger)
-	// T09：删除链（详设 §5.3）+ 低频清理循环（50ms 间隔加速收敛，语义同 §10
-	// CLEANUP_INTERVAL 的生产循环）；循环纳入 runCtx 生命周期，t.Cleanup 一并收口。
+	// T09：删除链（详设 §5.3）；低频清理循环（50ms 间隔加速收敛，语义同 §10
+	// CLEANUP_INTERVAL 的生产循环）按需启动（StartCleanupLoop），ctx 随 t.Cleanup 收口。
 	deleteSvc := apprec.NewDeleteService(recordingTx, query, store, cancelTable, logger, itInstanceID)
 	deleteHandler := handler.NewDeleteHandler(deleteSvc, logger)
+	cleanupCtx, cancelCleanup := context.WithCancel(runCtx)
 	cleanupWg := &sync.WaitGroup{}
-	worker.StartCleanup(runCtx, cleanupWg, itCleanupInterval, deleteSvc.CleanupPending)
 	t.Cleanup(func() {
 		cancelRun()
+		cancelCleanup()
 		pool.Stop()
 		cleanupWg.Wait()
 	})
 	return &PipelineHarness{
-		DB:      db,
-		Router:  httpapi.New(logger, uploadHandler, queryHandler, retryHandler, deleteHandler),
-		Pool:    pool,
-		DataDir: dataDir,
-		LogDir:  logDir,
-		Fake:    fake,
+		DB:         db,
+		Router:     httpapi.New(logger, uploadHandler, queryHandler, retryHandler, deleteHandler),
+		Pool:       pool,
+		ProcessSvc: processSvc,
+		DataDir:    dataDir,
+		LogDir:     logDir,
+		Fake:       fake,
+
+		deleteSvc:     deleteSvc,
+		cleanupCtx:    cleanupCtx,
+		cancelCleanup: cancelCleanup,
+		cleanupWg:     cleanupWg,
 	}
 }
 
@@ -130,8 +167,12 @@ const itCleanupInterval = 50 * time.Millisecond
 
 // pipelineConf / PipelineOpt 装配选项（T08 起按用例注入替身形态）。
 type pipelineConf struct {
-	failFirstASR bool
-	fileLog      bool
+	failFirstASR  bool
+	fileLog       bool
+	workers       int                                         // T10 IT-17：单 worker 存活断言
+	panicFirstASR bool                                        // T10 IT-17：首个转写调用 panic
+	txWrap        func(ports.ProcessingTx) ports.ProcessingTx // T10 §5.5：ProcessingTx 装饰
+	onHalt        func()                                      // T10 §5.5：受控退出观察器
 }
 
 // PipelineOpt 流水线测试装配选项。
@@ -146,6 +187,26 @@ func WithFailFirstASR() PipelineOpt {
 // WithFileLogging 日志写进临时目录（T09 删除用例断言 logs/app.jsonl 镜像事件）。
 func WithFileLogging() PipelineOpt {
 	return func(c *pipelineConf) { c.fileLog = true }
+}
+
+// WithWorkers 指定 worker 数（默认 3；IT-17 取 1：panic 击穿 worker 则后续任务无人认领）。
+func WithWorkers(n int) PipelineOpt {
+	return func(c *pipelineConf) { c.workers = n }
+}
+
+// WithPanickingFirstASR 转写替身首个调用 panic、此后委托确定性替身（IT-17 注入）。
+func WithPanickingFirstASR() PipelineOpt {
+	return func(c *pipelineConf) { c.panicFirstASR = true }
+}
+
+// WithProcessingTxWrap 在端口边界装饰 ProcessingTx（§5.5 持续落库失败注入）。
+func WithProcessingTxWrap(wrap func(ports.ProcessingTx) ports.ProcessingTx) PipelineOpt {
+	return func(c *pipelineConf) { c.txWrap = wrap }
+}
+
+// WithOnHalt 注入 §5.5 受控退出回调（观察 halted 触发）。
+func WithOnHalt(f func()) PipelineOpt {
+	return func(c *pipelineConf) { c.onHalt = f }
 }
 
 // newClaimEnv 只测认领协议（不起 worker 池）：真实 MySQL + ProcessingTx 适配器。

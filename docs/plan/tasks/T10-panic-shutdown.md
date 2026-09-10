@@ -32,17 +32,17 @@ panic 防护语义（§3.2）：阶段代码 panic → 记堆栈与 task 关联�
 
 ## 步骤
 
-- [ ] 1. 写失败测试（`tests/integration/resilience_test.go`）：
+- [x] 1. 写失败测试（`tests/integration/resilience_test.go`）：
   - `TestIT17_PanicRecovery`：阶段钩子注入 panic（转写替身内 panic）→ 任务 failed/90001；同一 worker 继续认领下一个任务并成功。
   - `TestIT18_GracefulShutdown`：在途任务执行中发 SIGTERM → 停止认领（新 pending 不被领取）；在途任务要么完成要么保持在途状态（无伪 failed）；进程在超时预算内退出，数据库正常关闭。
   - `TestResilience_DBUnavailableControlledExit`：包装适配器注入持续落库失败 → 受控退出（不就地死循环、不伪状态）。
-- [ ] 2. 运行确认失败：`TEST_MYSQL_DSN=… go test ./tests/integration/ -run 'TestIT17|TestIT18|TestResilience' -race -v`。
-- [ ] 3. 实现：process 单轮 `defer func(){ if r := recover(); r != nil { … } }()`；lifecycle 两阶段退出接线（claimCtx/runCtx 在 T06 已建，本任务补齐信号与 Shutdown 编排）。
-- [ ] 4. 运行确认通过：全绿（`-race`）。
-- [ ] 5. 手动验证：启动 → 上传（确定性长延迟）→ Ctrl-C → 观察日志两阶段输出与退出码；重启后由 T11 的恢复处理在途任务。
+- [x] 2. 运行确认失败：`TEST_MYSQL_DSN=… go test ./tests/integration/ -run 'TestIT17|TestIT18|TestResilience' -race -v`。
+- [x] 3. 实现：process 单轮 `defer func(){ if r := recover(); r != nil { … } }()`；lifecycle 两阶段退出接线（claimCtx/runCtx 在 T06 已建，本任务补齐信号与 Shutdown 编排）。
+- [x] 4. 运行确认通过：全绿（`-race`）。
+- [x] 5. 手动验证：启动 → 上传（确定性长延迟）→ Ctrl-C → 观察日志两阶段输出与退出码；重启后由 T11 的恢复处理在途任务。
 - [ ] 6. 提交：`feat: add panic isolation and graceful shutdown`。
 
 ## 完成标准
 
-- [ ] IT-17/IT-18 全绿；panic 后 worker 存活，SIGTERM 后无伪 failed。
-- [ ] 退出等待有上限，WaitGroup 全部回收（`-race` 无泄漏告警）。
+- [x] IT-17/IT-18 全绿；panic 后 worker 存活，SIGTERM 后无伪 failed。
+- [x] 退出等待有上限，WaitGroup 全部回收（`-race` 无泄漏告警）。

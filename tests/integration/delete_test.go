@@ -344,7 +344,8 @@ func TestIT09_ThreeTableDeleteRollback(t *testing.T) {
 // 不重复 task_delete_requested；恢复权限后低频清理循环收敛；已彻底删除的 ID → 404/20005。
 func TestDelete_FileFailureRetriesViaCleanup(t *testing.T) {
 	h := NewPipelineHarness(t)
-	h.Pool.Stop() // 冻结 pending，聚焦删除-清理链路
+	h.Pool.Stop()        // 冻结 pending，聚焦删除-清理链路
+	h.StartCleanupLoop() // 本用例断言后台清理收敛，按需启动 50ms 循环（harness 默认不启动）
 
 	w := doUpload(t, h.Router, formPart{field: "file", filename: "cleanup.wav", content: contentOf(1024)})
 	if w.Code != http.StatusAccepted {

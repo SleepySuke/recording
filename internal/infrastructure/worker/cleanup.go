@@ -9,10 +9,12 @@ import (
 	"time"
 )
 
-// StartCleanup 在 runCtx 下启动清理循环并纳入 wg：每 interval 触发一次 cleanup，
-// runCtx 取消即退出。interval 非正时取生产默认 30s（详设 §10）。重复调用各自
-// 启动独立循环（生产仅 wire.go 一处）。
-func StartCleanup(runCtx context.Context, wg *sync.WaitGroup, interval time.Duration, cleanup func(ctx context.Context)) {
+// StartCleanup 在 ctx 下启动清理循环并纳入 wg：每 interval 触发一次 cleanup，
+// ctx 取消即退出——生产装配由 Lifecycle 在 drain 第一步取消（与停认领同时，详设
+// §3.5 第 1 条「停止认领新任务/新清理工作」）。独立于池的 claimCtx，使「冻结认领、
+// 清理续跑」可分别控制。interval 非正时取生产默认 30s（详设 §10）。重复调用各自
+// 启动独立循环（生产仅 bootstrap/wire.go 一处）。
+func StartCleanup(ctx context.Context, wg *sync.WaitGroup, interval time.Duration, cleanup func(ctx context.Context)) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -23,10 +25,10 @@ func StartCleanup(runCtx context.Context, wg *sync.WaitGroup, interval time.Dura
 		defer ticker.Stop()
 		for {
 			select {
-			case <-runCtx.Done():
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				cleanup(runCtx)
+				cleanup(ctx)
 			}
 		}
 	}()

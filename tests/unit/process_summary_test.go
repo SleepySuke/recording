@@ -120,7 +120,7 @@ func TestProcess_TranscribeFailFailsTask(t *testing.T) {
 		&stubTranscriber{err: errors.New("mock transcription failed")},
 		&stubSummarizer{},
 	)
-	svc.Process(context.Background())
+	svc.Process(context.Background(), context.Background())
 
 	if tx.failCnt != 1 {
 		t.Fatalf("FailTask 调用 %d 次, want 1", tx.failCnt)
@@ -155,7 +155,7 @@ func TestProcess_LLMErrorMapping(t *testing.T) {
 				&stubTranscriber{text: "transcript"},
 				&stubSummarizer{err: tc.err},
 			)
-			svc.Process(context.Background())
+			svc.Process(context.Background(), context.Background())
 
 			if tx.failCnt != 1 {
 				t.Fatalf("FailTask 调用 %d 次, want 1", tx.failCnt)
@@ -173,7 +173,7 @@ func TestProcess_CancelDiscards(t *testing.T) {
 		&stubTranscriber{text: "transcript"},
 		&stubSummarizer{err: context.Canceled},
 	)
-	svc.Process(context.Background())
+	svc.Process(context.Background(), context.Background())
 
 	if tx.failCnt != 0 || tx.completeCnt != 0 {
 		t.Fatalf("取消后不应落库: fail=%d complete=%d", tx.failCnt, tx.completeCnt)
@@ -184,7 +184,7 @@ func TestProcess_CancelDiscards(t *testing.T) {
 func TestProcess_SuccessCompletes(t *testing.T) {
 	want := domain.Summary{Summary: "s", KeyPoints: []string{"k1"}, Todos: []string{}}
 	svc, tx := newProcessEnv(&stubTranscriber{text: "transcript"}, &stubSummarizer{sum: want})
-	svc.Process(context.Background())
+	svc.Process(context.Background(), context.Background())
 
 	if tx.completeCnt != 1 {
 		t.Fatalf("CompleteTask 调用 %d 次, want 1", tx.completeCnt)
@@ -205,7 +205,7 @@ func TestProcess_StaleDiscarded(t *testing.T) {
 		&stubSummarizer{},
 	)
 	tx.saveErr = ports.ErrStaleExecution
-	svc.Process(context.Background())
+	svc.Process(context.Background(), context.Background())
 
 	if tx.saveCalls != 1 {
 		t.Fatalf("SaveTranscription 调用 %d 次, want 1（stale 不重试）", tx.saveCalls)
@@ -215,7 +215,7 @@ func TestProcess_StaleDiscarded(t *testing.T) {
 	}
 	// 未停止认领：下一轮 Process 仍会调用 ClaimNext。
 	before := tx.claims
-	svc.Process(context.Background())
+	svc.Process(context.Background(), context.Background())
 	if tx.claims != before+1 {
 		t.Errorf("stale 后不应停止认领：claims %d → %d", before, tx.claims)
 	}
@@ -226,7 +226,7 @@ func TestProcess_StaleDiscarded(t *testing.T) {
 func TestProcess_PersistRetryBounds(t *testing.T) {
 	svc, tx := newProcessEnv(&stubTranscriber{text: "transcript"}, &stubSummarizer{})
 	tx.completeErr = errors.New("db down")
-	svc.Process(context.Background())
+	svc.Process(context.Background(), context.Background())
 
 	if tx.completeCnt != 3 {
 		t.Fatalf("CompleteTask 调用 %d 次, want 3（1 + 2 次重试）", tx.completeCnt)
@@ -238,7 +238,7 @@ func TestProcess_PersistRetryBounds(t *testing.T) {
 		t.Fatal("持续落库失败后应处于停止认领状态")
 	}
 	before := tx.claims
-	svc.Process(context.Background())
+	svc.Process(context.Background(), context.Background())
 	if tx.claims != before {
 		t.Errorf("停止认领后仍认领：claims %d → %d", before, tx.claims)
 	}

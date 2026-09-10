@@ -25,10 +25,19 @@ import (
 // 串行化也无害（安全侧）。
 const suiteLockName = "recording_test_suite"
 
-// TestMain 跑任何用例前取整包咨询锁，m.Run() 结束后释放——锁挂在专用连接上整包
-// 持有，不能复用用例的 gorm 连接（用例结束即关闭释放，挡不住下一用例/另一包）。
+// TestMain 切到仓库根再运行（T10 起 bootstrap.NewApp 内 mysql.Migrate(db, "migrations")
+// 依赖 cwd，与 e2e 同模式），取整包咨询锁后运行，结束后释放并还原。
 // 未配置 TEST_MYSQL_DSN 时用例各自 t.Skip，无需互斥。
 func TestMain(m *testing.M) {
+	orig, err := os.Getwd()
+	if err != nil {
+		os.Stderr.WriteString("获取工作目录失败: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	if err := os.Chdir("../.."); err != nil {
+		os.Stderr.WriteString("切换到仓库根失败: " + err.Error() + "\n")
+		os.Exit(1)
+	}
 	release, err := acquireSuiteLock()
 	if err != nil {
 		os.Stderr.WriteString("获取测试库包级互斥锁失败: " + err.Error() + "\n")
@@ -36,6 +45,10 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	release()
+	if err := os.Chdir(orig); err != nil {
+		os.Stderr.WriteString("还原工作目录失败: " + err.Error() + "\n")
+		os.Exit(1)
+	}
 	os.Exit(code)
 }
 
@@ -78,8 +91,8 @@ func acquireSuiteLock() (func(), error) {
 	}, nil
 }
 
-// migrationsDir 迁移文件目录（测试从 tests/integration 运行，相对仓库根）。
-const migrationsDir = "../../migrations"
+// migrationsDir 迁移文件目录（TestMain 已切到仓库根，相对仓库根）。
+const migrationsDir = "migrations"
 
 // RequireTestDB 打开 TEST_MYSQL_DSN 指向的测试库：
 // 未设置 → 跳过；DSN 不含 "test" → 直接失败（测试库红线，禁止指向业务数据）；

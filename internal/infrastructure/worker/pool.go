@@ -19,64 +19,73 @@ var _ ports.Notifier = (*Pool)(nil)
 type Pool struct {
 	workers int
 	poll    time.Duration
-	process func(ctx context.Context)
+	process func(claimCtx, runCtx context.Context)
 
 	wakes []chan struct{}
 	wg    sync.WaitGroup
+	done  chan struct{} // 全部 worker 退出后关闭：停机路径有界等待用（详设 §3.5）
 
 	mu          sync.Mutex
 	started     bool
 	stopped     bool
-	cancelClaim context.CancelFunc // claimCtx：drain 第一步取消，停止认领（§3.5 前置，T10 补全）
-	cancelRun   context.CancelFunc // Start 传入 runCtx 的派生取消
+	drained     bool
+	claimCtx    context.Context    // Start 派生并返回，供清理循环共享（§3.4/§3.5）
+	cancelClaim context.CancelFunc // claimCtx：drain 第一步取消，停止认领（§3.5 第 1 条）
+	cancelRun   context.CancelFunc // Start 传入 runCtx 的派生取消（强停用）
 }
 
 // NewPool 创建池：唤醒 channel 在构造时建立，Notify 不依赖 Start。
-func NewPool(n int, poll time.Duration, process func(ctx context.Context)) *Pool {
+func NewPool(n int, poll time.Duration, process func(claimCtx, runCtx context.Context)) *Pool {
 	wakes := make([]chan struct{}, n)
 	for i := range wakes {
 		wakes[i] = make(chan struct{}, 1)
 	}
-	return &Pool{workers: n, poll: poll, process: process, wakes: wakes}
+	return &Pool{workers: n, poll: poll, process: process, wakes: wakes, done: make(chan struct{})}
 }
 
-// Start 以 runCtx 启动全部 worker；启动后立即尝试认领一轮（详设 §3.2）。
-// 重复调用无效果。优雅 drain（停 HTTP→停认领→等在途）由 T10 完成，当前 Stop
-// 直接取消认领与执行。
-func (p *Pool) Start(runCtx context.Context) {
+// Start 以 runCtx 启动全部 worker；启动后立即尝试认领一轮（详设 §3.2）。返回池内
+// 派生的 claimCtx（runCtx 子级，§3.4 context 树）供清理循环等共享——Drain 取消它
+// 即同时停认领与停清理。重复调用无效果（返回已建立的 claimCtx）。
+func (p *Pool) Start(runCtx context.Context) context.Context {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.started {
-		return
+		return p.claimCtx
 	}
 	p.started = true
 	runChild, cancelRun := context.WithCancel(runCtx)
 	claimCtx, cancelClaim := context.WithCancel(runChild)
-	p.cancelRun, p.cancelClaim = cancelRun, cancelClaim
+	p.cancelRun, p.cancelClaim, p.claimCtx = cancelRun, cancelClaim, claimCtx
 	for i := 0; i < p.workers; i++ {
 		p.wg.Add(1)
 		go p.loop(runChild, claimCtx, p.wakes[i])
 	}
+	// 全部 worker 退出后关闭 done；goroutine 随池生命周期（Stop 后即出）。
+	go func() {
+		p.wg.Wait()
+		close(p.done)
+	}()
+	return claimCtx
 }
 
-// loop 单个 worker 主循环（详设 §3.2）：执行一轮 → 等待唤醒/轮询/退出。
-// 本任务 taskCtx 由 claimCtx 派生（process 内部）；T10 两阶段退出落地后改由
-// runCtx 派生，使在途任务在 drain 期间继续执行（详设 §3.5 第 3 条）。
-func (p *Pool) loop(ctx, claimCtx context.Context, wake <-chan struct{}) {
+// loop 单个 worker 主循环（详设 §3.2/§3.5）：认领受 claimCtx（drain 即停），执行链
+// 用 runCtx——taskCtx 在 process 内自 runCtx 派生（§3.4），在途任务在 drain 期间
+// 继续执行，仅强停（runCtx 取消）中断。
+func (p *Pool) loop(runCtx, claimCtx context.Context, wake <-chan struct{}) {
 	defer p.wg.Done()
 	ticker := time.NewTicker(p.poll)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			return
 		case <-claimCtx.Done():
-			return // drain：停止认领新任务
+			return // drain：停止认领新任务（§3.5 第 1 条）
 		default:
 		}
-		p.process(claimCtx)
+		p.process(claimCtx, runCtx)
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			return
 		case <-claimCtx.Done():
 			return
@@ -98,7 +107,22 @@ func (p *Pool) Notify() {
 	}
 }
 
-// Stop 取消认领（drain 第一步）、取消执行并等待全部 worker 退出；幂等。
+// Drain drain 第一步（详设 §3.5 第 1 条）：只取消 claimCtx——停止认领新任务并停
+// 共享 claimCtx 的清理循环；在途任务继续以 runCtx 执行。幂等、不等待。
+func (p *Pool) Drain() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.started || p.drained {
+		return
+	}
+	p.drained = true
+	p.cancelClaim()
+}
+
+// Done 全部 worker 退出后关闭；停机路径据此对 WaitGroup 收口做有界等待（§3.5 第 4 条）。
+func (p *Pool) Done() <-chan struct{} { return p.done }
+
+// Stop 强停：取消认领与执行，并等待全部 worker 退出（WaitGroup 收口）。幂等。
 func (p *Pool) Stop() {
 	p.mu.Lock()
 	started, stopped := p.started, p.stopped
@@ -108,7 +132,11 @@ func (p *Pool) Stop() {
 	if !started || stopped {
 		return
 	}
-	cancelClaim()
-	cancelRun()
+	if cancelClaim != nil {
+		cancelClaim()
+	}
+	if cancelRun != nil {
+		cancelRun()
+	}
 	p.wg.Wait()
 }

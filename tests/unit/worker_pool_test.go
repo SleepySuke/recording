@@ -16,7 +16,7 @@ import (
 // TestUT09_NotifyNeverBlocks：唤醒 channel 已满时连续 Notify 立即返回，无阻塞、无 panic
 // （UT-09，详设 §3.3——通知不启动新协程、不等 worker 空闲）。
 func TestUT09_NotifyNeverBlocks(t *testing.T) {
-	p := worker.NewPool(3, time.Second, func(context.Context) {})
+	p := worker.NewPool(3, time.Second, func(context.Context, context.Context) {})
 	// 不 Start 也必须可通知：唤醒 channel 在 NewPool 创建，Notify 不依赖 worker 运行。
 	p.Notify()
 	p.Notify() // 每个 cap-1 channel 至此已满
@@ -76,7 +76,7 @@ func TestCancelTable_RegisterCancelUnregister(t *testing.T) {
 func TestPool_StopWaitsForWorkers(t *testing.T) {
 	const n = 3
 	started := make(chan struct{}, n)
-	p := worker.NewPool(n, time.Hour, func(context.Context) { started <- struct{}{} })
+	p := worker.NewPool(n, time.Hour, func(context.Context, context.Context) { started <- struct{}{} })
 
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
