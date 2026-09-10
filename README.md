@@ -131,7 +131,7 @@ make start    # 自检环境后一键启动（复用已有镜像）并等待 /re
 | `make setup` | 复制 `.env.example` 为 `.env`（已存在不覆盖）并提示填写 |
 | `make build` | 显式构建 / 更新 app 镜像；代码变更后执行。`start` 只在镜像不存在时才构建，不会自动重建已有镜像 |
 | `make start` | 容器方式启动：先 `check`；起 app + db（复用已有容器，仅缺失时构建/拉取），等待 `/readyz` 就绪 |
-| `make dev` | 本地开发：只以 Compose 起 db，应用 `go run` 直连本地 `.env`，日志输出终端；不构建应用镜像 |
+| `make dev` | 本地开发：纯 `go run` 直连本地 `.env`（日常联调连已有 MySQL，如共享实例；**不起任何容器**，用过 `make start` 先 `make down` 释放 8080） |
 | `make down` | 停止并移除容器；保留数据卷与 `./logs` |
 | `make logs` | 跟踪应用与数据库日志 |
 | `make test` | 全量测试：单元恒跑；集成与 E2E golden 需 `TEST_MYSQL_DSN`（未设逐层跳过并提示）；race 检查附带 |
@@ -167,12 +167,12 @@ make start    # 自检环境后一键启动（复用已有镜像）并等待 /re
 3. 轮询 `GET /v1/tasks/{id}`：pending → transcribing → summarizing → 终态（每次阶段变化 attempt 恒为当前轮次）；
 4. 成功摘要：done 后详情 `transcript` 与 `result.summary/key_points/todos` 来自 LLM（确定性替身下为 FakeNormalSummary；真实渠道结果见「已知问题与缺口」）；
 5. 失败与手动重试：占位 Key 下任务 failed/50002 → `POST /retry` → `202 attempt=2` 重新入队；
-6. `GET /v1/recordings?page=1&page_size=20` 分页倒序；`DELETE /v1/recordings/{id}` → 204，行由后台清理循环（默认 30s）移除后列表不可见；
+6. `GET /v1/recordings?page=1&page_size=20` 分页倒序；`DELETE /v1/recordings/{id}` → 204，文件删除与三表清理在返回前已同步完成、列表即刻不可见；失败时保留标记（503/20006），由后台清理循环续做；
 7. 在途重启恢复与两阶段退出的过程级证据见 E2E-06（重启恢复）与 T10 报告（Ctrl-C 两阶段停机）。
 
 ## 测试与验收
 
-三层测试全部 `-race` 实跑通过（2026-09-09，DSN 指向专用测试库 recording_test）：
+三层测试全部 `-race` 实跑通过（2026-09-10，DSN 指向专用测试库 recording_test）：
 
 | 层 | 命令 | 结果 |
 | --- | --- | --- |

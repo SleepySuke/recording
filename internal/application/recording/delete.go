@@ -122,7 +122,7 @@ func (s *DeleteService) finalize(ctx context.Context, row ports.DeletingCleanup)
 			Attempt:          row.Attempt,
 			Kind:             domain.EventTaskDeleted,
 			OccurredAt:       time.Now().UTC(),
-			Level:            "INFO",
+			Level:            domain.LevelInfo,
 			FromStatus:       &from,
 			ToStatus:         &to,
 			CreatedRequestID: "",

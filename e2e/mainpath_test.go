@@ -177,6 +177,7 @@ func TestE2E01_MainPath(t *testing.T) {
 		resp.TaskID:      "<task_id>",
 	})
 
-	// 不变量巡检（测试设计 §6，直接断言不进 golden）：当前无删除功能，deleting 行应为 0。
+	// 不变量巡检（测试设计 §6，直接断言不进 golden）：本用例未走删除路径，
+	// 同步删除语义下 deleting 行应为 0（T09 放宽仅适用于删除失败保留标记的用例）。
 	checkInvariants(t, h.DB)
 }

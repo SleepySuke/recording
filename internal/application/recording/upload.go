@@ -105,7 +105,7 @@ func (s *UploadService) Upload(ctx context.Context, req UploadRequest) (UploadRe
 		Attempt:          1,
 		Kind:             domain.EventTaskCreated,
 		OccurredAt:       now,
-		Level:            "INFO",
+		Level:            domain.LevelInfo,
 		ToStatus:         &pending,
 		CreatedRequestID: req.RequestID,
 		InstanceID:       s.instanceID,

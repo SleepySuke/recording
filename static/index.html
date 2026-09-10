@@ -37,7 +37,7 @@
 <section>
   <h2>2. 任务状态轮询（GET /v1/tasks/{task_id}）</h2>
   <div class="row"><input type="text" id="taskId" placeholder="task_id" size="40"> <button id="pollBtn">开始轮询</button> <button id="stopPollBtn" disabled>停止</button></div>
-  <div class="row" id="taskInfo" class="muted">每秒查询一次，展示 status / attempt 阶段变化；done 后自动拉取转写与摘要，failed 后可重试。</div>
+  <div class="row muted" id="taskInfo">每秒查询一次，展示 status / attempt 阶段变化；done 后自动拉取转写与摘要，failed 后可重试。</div>
   <div class="row"><button id="retryBtn" class="warn" style="display:none">重试该任务（POST /v1/tasks/{task_id}/retry）</button></div>
   <div id="taskResult"></div>
 </section>
@@ -131,7 +131,7 @@ $("retryBtn").onclick = function () { // 仅 failed 任务可重试，其余返�
       ? "重试已受理：" + badge(res.body.status) + "（attempt=" + res.body.attempt + "，继续轮询观察）"
       : "重试被拒绝 HTTP " + res.code + "：" + fmtErr(res.body);
     if (res.code === 202) { lastStatus = null; startPolling(); }
-  });
+  }).catch(function (e) { $("taskResult").textContent = "重试请求失败：" + e; });
 };
 
 // ---- 3. 列表（分页）----
@@ -166,9 +166,9 @@ function loadDetail(id, box) {
   }).catch(function (e) { box.textContent = "详情请求失败：" + e; });
 }
 $("delBtn").onclick = function () { var id = $("recId").value.trim(); if (id && confirm("确认删除录音及其文件与关联数据？不可恢复。")) delById(id, $("detailBox")); };
-function delById(id, box) { // 204 成功；软删除先标记 deleting、后台清理文件
+function delById(id, box) { // 204 成功：标记 deleting + 同步删文件与三表清理；失败保留标记由后台清理续做
   fetch("/v1/recordings/" + encodeURIComponent(id), { method: "DELETE" }).then(function (r) {
-    if (r.status === 204) { box.innerHTML = "已受理删除（204），文件由后台清理循环移除。"; loadList(); }
+    if (r.status === 204) { box.innerHTML = "已删除（204），文件与三表清理已同步完成。"; loadList(); }
     else r.json().then(function (b) { box.textContent = "HTTP " + r.status + "：" + fmtErr(b); });
   }).catch(function (e) { box.textContent = "删除请求失败：" + e; });
 }

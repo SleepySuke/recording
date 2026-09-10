@@ -72,11 +72,10 @@ start: ## 一键启动：先自检；up -d 起 app+db（复用已有镜像与容
 	done; \
 	printf '\n超时未就绪：make logs 查看原因\n'; exit 1
 
-dev: ## 本地开发：先自检；只以 Compose 起 db（已在运行则直接复用），应用 go run 连本地 .env，日志到终端
+dev: ## 本地开发：先自检；纯 go run 直连本地 .env（日常联调连已有 MySQL，不起任何容器）
 	@$(MAKE) --no-print-directory check
-	$(COMPOSE) up -d --wait db
 	@set -a; . ./.env; set +a; \
-	printf 'go run ./cmd/server（Ctrl-C 退出应用；db 用 make down 停止）\n'; \
+	printf 'go run ./cmd/server（Ctrl-C 退出；若用过 make start，先 make down 释放端口）\n'; \
 	$(GO) run ./cmd/server
 
 down: ## 停止并移除容器（start 与 dev 通用）；保留数据卷与 ./logs

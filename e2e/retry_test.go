@@ -206,8 +206,8 @@ type e04Actual struct {
 }
 
 // TestE2E04_RetryConflictAndMissing（测试设计 §5.2 E2E-04，详设 §8.3）：
-// 对 done 任务 retry → 409/30002；对随机 UUID retry → 404/30001；错误体含
-// request_id（掩码归一化）。任务不被推进、无新增事件。
+// 对 done 任务 retry → 409/30002；对随机 UUID retry → 404/30001。
+// 任务不被推进、无新增事件。
 func TestE2E04_RetryConflictAndMissing(t *testing.T) {
 	h := newE2E(t, e2eOpts{MockASRDelay: 0})
 

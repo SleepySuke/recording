@@ -10,6 +10,7 @@
 
 ### 1. 上传音频（multipart 字段名 file；扩展名 wav/mp3/m4a/aac，≤50MiB）
 ### 202 → {"recording_id":"...","task_id":"...","status":"pending"}；非法扩展名/空文件 → 400
+### 注意：`< ./meeting.wav` 按 .http 文件所在目录解析——音频文件需与本文件同目录放置（或改为绝对路径）。
 POST {{base_url}}/v1/recordings
 Content-Type: multipart/form-data; boundary=WebAppBoundary
 
@@ -34,7 +35,7 @@ GET {{base_url}}/v1/recordings?page=1&page_size=20
 ### 操作路径：先用接口 2 查询任务 → 确认 status=failed 且记录 task_id → 发本请求 → 再轮询观察新一轮执行
 POST {{base_url}}/v1/tasks/{{task_id}}/retry
 
-### 6. 删除录音（204：标记软删除 + 取消在途任务，文件由后台清理循环移除；不存在 → 404）
+### 6. 删除录音（204：标记软删除 + 取消在途任务，文件与三表清理在返回前同步完成；失败保留标记由后台清理循环续做；不存在 → 404）
 DELETE {{base_url}}/v1/recordings/{{recording_id}}
 
 ### 附：健康与就绪（就绪门控：启动恢复全部完成才 ready；未就绪时上传返回 503）
