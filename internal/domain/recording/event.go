@@ -18,6 +18,16 @@ const (
 	EventTaskDeleted            EventKind = "task_deleted"
 )
 
+// EventLevel 事件级别枚举（详设 §7.2 level 列：INFO / WARN / ERROR）。
+// 命名常量取代裸字符串（T03 评审遗留项）：新调用点一律用具名值。
+type EventLevel string
+
+const (
+	LevelInfo  EventLevel = "INFO"
+	LevelWarn  EventLevel = "WARN"
+	LevelError EventLevel = "ERROR"
+)
+
 // TaskEvent 任务生命周期事件的领域值描述（详设 §7.2 全字段，去除数据库物理列）：
 // 与状态变更同事务写入，写入后不修改；不随聚合整体加载，也不用于事件回放重建聚合（§2.1）。
 type TaskEvent struct {
@@ -28,7 +38,7 @@ type TaskEvent struct {
 	Attempt          int
 	Kind             EventKind
 	OccurredAt       time.Time
-	Level            string // INFO / WARN / ERROR
+	Level            EventLevel // INFO / WARN / ERROR（详设 §7.2）
 	FromStatus       *TaskStatus
 	ToStatus         *TaskStatus
 	Stage            *string // transcribing / summarizing

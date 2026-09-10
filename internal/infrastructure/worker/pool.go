@@ -29,7 +29,7 @@ type Pool struct {
 	started     bool
 	stopped     bool
 	drained     bool
-	claimCtx    context.Context    // Start 派生并返回，供清理循环共享（§3.4/§3.5）
+	claimCtx    context.Context    // Start 派生（§3.4/§3.5），Drain 取消即停认领
 	cancelClaim context.CancelFunc // claimCtx：drain 第一步取消，停止认领（§3.5 第 1 条）
 	cancelRun   context.CancelFunc // Start 传入 runCtx 的派生取消（强停用）
 }
@@ -43,14 +43,14 @@ func NewPool(n int, poll time.Duration, process func(claimCtx, runCtx context.Co
 	return &Pool{workers: n, poll: poll, process: process, wakes: wakes, done: make(chan struct{})}
 }
 
-// Start 以 runCtx 启动全部 worker；启动后立即尝试认领一轮（详设 §3.2）。返回池内
-// 派生的 claimCtx（runCtx 子级，§3.4 context 树）供清理循环等共享——Drain 取消它
-// 即同时停认领与停清理。重复调用无效果（返回已建立的 claimCtx）。
-func (p *Pool) Start(runCtx context.Context) context.Context {
+// Start 以 runCtx 启动全部 worker；启动后立即尝试认领一轮（详设 §3.2）。
+// claimCtx 在池内派生（runCtx 子级，§3.4 context 树），Drain 取消它即停认领；
+// 清理循环挂独立 cleanupCtx（bootstrap 装配，§3.5 第 1 条）。重复调用无效果。
+func (p *Pool) Start(runCtx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.started {
-		return p.claimCtx
+		return
 	}
 	p.started = true
 	runChild, cancelRun := context.WithCancel(runCtx)
@@ -65,7 +65,14 @@ func (p *Pool) Start(runCtx context.Context) context.Context {
 		p.wg.Wait()
 		close(p.done)
 	}()
-	return claimCtx
+}
+
+// Started 报告 Start 是否已调用（T11：巡检失败阻止启动时池未启动，停机路径据此
+// 跳过对 Done 的等待——未启动的池 done 永不关闭）。
+func (p *Pool) Started() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.started
 }
 
 // loop 单个 worker 主循环（详设 §3.2/§3.5）：认领受 claimCtx（drain 即停），执行链

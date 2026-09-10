@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"recording-transcription/internal/application/ports"
 	"recording-transcription/internal/application/processing"
@@ -32,13 +33,21 @@ type App struct {
 	pool        *worker.Pool
 	cancelRun   context.CancelFunc
 	waitCleanup func()
+	ready       *atomic.Bool // /readyz 就绪门控（§6.2：启动恢复全部完成才置位）
 }
 
-// NewApp 组装：日志 + DB（连接 + 迁移）+ 上传链 + 异步流水线（worker 池 + 认领 +
-// Mock 转写 + LLM 摘要 + 完成失败事务）+ 删除清理循环 + http.Server + Lifecycle。
-// 返回前已启动 worker 池与清理循环；信号接收与停机编排见 Run / Lifecycle。
-// §5.5 受控退出：落库持续失败置 halted 后经 OnHalt 触发 Lifecycle 两阶段停机。
-// 恢复流程与就绪门控在 T11。
+// Ready 报告服务是否就绪（T11，详设 §6.2）：启动恢复（巡检 → 删除恢复 → 在途重置
+// → 孤儿核对）全部完成且 worker 已启动后为 true；巡检 90004 阻止 ready（HTTP 仍在，
+// healthz 200 / readyz 503，等运维介入）。
+func (a *App) Ready() bool { return a.ready.Load() }
+
+// NewApp 组装：日志 + DB（连接 + 迁移 = §6.2 步骤 1/2）+ 上传链 + 异步流水线
+// （worker 池 + 认领 + Mock 转写 + LLM 摘要 + 完成失败事务）+ 删除清理循环 +
+// http.Server + Lifecycle；随后按 §6.2 步骤 3～7 执行启动恢复（巡检 90004 阻止
+// ready；删除恢复不阻塞；在途重置失败阻止启动；孤儿核对失败不阻塞）并启动 worker
+// 与清理循环、置 /readyz 就绪。巡检失败时返回不就绪的 App（不启 worker、err=nil）；
+// 其余恢复失败返回 error（交容器重启）。§5.5 受控退出：落库持续失败置 halted 后经
+// OnHalt 触发 Lifecycle 两阶段停机。
 func NewApp(cfg *Config) (*App, error) {
 	logger, err := logging.New(logging.Options{
 		Dir:       cfg.LogDir,
@@ -96,13 +105,14 @@ func NewApp(cfg *Config) (*App, error) {
 	// 重试链（详设 §4.5）：RetryService 复用 recordingTx，COMMIT 后经 pool Notify 唤醒。
 	retryHandler := handler.NewRetryHandler(apprec.NewRetryService(recordingTx, pool, logger), logger)
 	// 删除链（T09，详设 §5.3）：DELETE 用例 + 低频清理循环（§10 CLEANUP_INTERVAL）；
-	// 清理循环挂 claimCtx——drain 第一步随停认领一并退出（§3.5 第 1 条）。
+	// 清理循环挂独立 cleanupCtx（runCtx 子级）——Lifecycle 阶段 1 与停认领同时取消（§3.5 第 1 条）。
 	deleteSvc := apprec.NewDeleteService(recordingTx, query, fileStore, cancelTable, logger, instanceID)
 	deleteHandler := handler.NewDeleteHandler(deleteSvc, logger)
 
+	ready := &atomic.Bool{} // §6.2 就绪门控：恢复完成前 /readyz 503
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
-		Handler: httpapi.New(logger, uploadHandler, queryHandler, retryHandler, deleteHandler),
+		Handler: httpapi.New(logger, uploadHandler, queryHandler, retryHandler, deleteHandler, ready.Load),
 	}
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	cleanupCtx, cancelCleanup := context.WithCancel(runCtx)
@@ -114,18 +124,48 @@ func NewApp(cfg *Config) (*App, error) {
 		}
 		return sqlDB.Close()
 	}
-	lc = NewLifecycle(cfg.ShutdownTimeout, logger, srv, pool, cancelRun, cancelCleanup, cleanupWg.Wait, closeDB)
+	lc = NewLifecycle(cfg.ShutdownTimeout, logger, srv, pool, cancelRun, cancelCleanup, cleanupWg.Wait, closeDB,
+		func() { ready.Store(false) })
+
+	// §6.2 启动恢复序列（步骤 3～6；步骤 1/2 健康检查与迁移已在上方 NewApp 内完成）。
+	// 单实例独占窗口：全部完成前不置就绪、不启动 worker、不接收上传（§4.1「恢复 vs 一切」）。
+	bootCtx := context.Background() // 恢复为毫秒级批量操作（§6.2），不设外层期限
+	recoverer := processing.NewRecoverService(processingTx, deleteSvc, fileStore, logger, cfg.RecoveryMode == "interrupt")
+	if err := recoverer.Inspect(bootCtx); err != nil {
+		// 巡检 90004：用例 Inspect 内已记带数值码的 ERROR 日志（T06 移交语义），
+		// 此处不再重复。阻止 ready、不启动 worker，但保留 HTTP（healthz 200 /
+		// readyz 503、上传 503/90005）供观测，等运维修复（§6.2 Block 分支）。
+		return &App{
+			Server: srv, Logger: logger, Lifecycle: lc,
+			pool: pool, cancelRun: cancelRun, waitCleanup: cleanupWg.Wait, ready: ready,
+		}, nil
+	}
+	if err := recoverer.ResumeDeletions(bootCtx); err != nil {
+		logger.Warn("恢复未完成删除失败，已记录、不阻塞任务恢复（§6.2 步骤 4）", slog.Any("err", err))
+	}
+	if _, err := recoverer.ResetInFlight(bootCtx); err != nil {
+		// §6.2 步骤 5：更新与事件同一事务，任一失败整体回滚并阻止启动（交容器重启）。
+		return nil, fmt.Errorf("重置在途任务失败，阻止启动: %w", err)
+	}
+	if _, err := recoverer.RemoveOrphanFiles(bootCtx); err != nil {
+		// §5.2：查询失败不清理——记日志、不阻塞启动（下次启动再核对）。
+		logger.Error("孤儿文件核对未执行", slog.Any("err", err))
+	}
+
+	// 步骤 7：启动 worker 池与清理循环，置 /readyz 就绪（恢复出的 pending 与存量
+	// pending 一起按 created_at 顺序消费，详设 §6.2）。
 	pool.Start(runCtx)
-	// 清理循环独立 ctx（runCtx 子级）：Lifecycle 阶段 1 与停认领同时取消（§3.5）。
 	worker.StartCleanup(cleanupCtx, cleanupWg, cfg.CleanupInterval, deleteSvc.CleanupPending)
+	ready.Store(true)
 	logger.Info("worker pool started",
 		slog.Int("workers", cfg.WorkerConcurrency),
 		slog.Duration("poll_interval", cfg.TaskPollInterval))
 	logger.Info("cleanup loop started", slog.Duration("interval", cfg.CleanupInterval))
+	logger.Info("startup recovery complete, ready", slog.String("mode", cfg.RecoveryMode))
 
 	return &App{
 		Server: srv, Logger: logger, Lifecycle: lc,
-		pool: pool, cancelRun: cancelRun, waitCleanup: cleanupWg.Wait,
+		pool: pool, cancelRun: cancelRun, waitCleanup: cleanupWg.Wait, ready: ready,
 	}, nil
 }
 

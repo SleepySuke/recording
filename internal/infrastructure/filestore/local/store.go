@@ -119,6 +119,22 @@ func (s *Store) Delete(_ context.Context, storagePath string) error {
 	return nil
 }
 
+// ListStored 列出数据目录内全部文件名（含 tmp-，详设 §5.2）：孤儿文件核对的盘侧
+// 视图；只列一层平铺目录（本存储不建子目录），目录读取失败返回错误、调用方不清理。
+func (s *Store) ListStored(_ context.Context) ([]string, error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: 读取数据目录失败: %v", ports.ErrStorageUnavailable, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
+
 // checkFreeSpace 写入前磁盘空间预检（详设 §5.1：不足直接 503/90003）。
 func (s *Store) checkFreeSpace() error {
 	var st unix.Statfs_t

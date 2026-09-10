@@ -148,7 +148,7 @@ func NewPipelineHarness(t *testing.T, opts ...PipelineOpt) *PipelineHarness {
 	})
 	return &PipelineHarness{
 		DB:         db,
-		Router:     httpapi.New(logger, uploadHandler, queryHandler, retryHandler, deleteHandler),
+		Router:     httpapi.New(logger, uploadHandler, queryHandler, retryHandler, deleteHandler, nil),
 		Pool:       pool,
 		ProcessSvc: processSvc,
 		DataDir:    dataDir,

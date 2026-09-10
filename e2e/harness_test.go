@@ -53,25 +53,15 @@ type e2eOpts struct {
 	LLMTimeout       time.Duration // 0 = 默认 10s；E2E-03 缩短以快速触发 50001
 }
 
-// newE2E 装配并启动一台真实服务。opts 逐项透传 Config（对应 MOCK_ASR_* / LLM_TIMEOUT）。
-func newE2E(t *testing.T, opts e2eOpts) *e2eHarness {
-	t.Helper()
-	gin.SetMode(gin.TestMode) // 只关路由注册噪音，不影响真实 HTTP 行为
-	db := requireTestDB(t)
-	dataDir := t.TempDir()
-	logDir := t.TempDir()
+// newE2EConfig 组装真实 Config：e2eOpts 逐项透传（MOCK_ASR_* / LLM_TIMEOUT）；
+// dataDir/logDir/shutdownTimeout 由调用方给定——E2E-06 重启路径 A/B 共享目录与库、
+// A 用小停机预算触发超预算强停（详设 §3.5 第 4 条）。
+func newE2EConfig(opts e2eOpts, llmURL, dataDir, logDir string, shutdownTimeout time.Duration) *bootstrap.Config {
 	llmTimeout := opts.LLMTimeout
 	if llmTimeout <= 0 {
 		llmTimeout = 10 * time.Second
 	}
-
-	// 摘要段（T07）：真实 LLM 适配器指向进程内 FakeLLM（默认 normal 正常应答），
-	// 服务经 cfg.LLM* 三项与其相连——摘要链路走真实 HTTP，只替身渠道本身。
-	fake := llm.NewFake()
-	fakeSrv := httptest.NewServer(fake)
-	t.Cleanup(fakeSrv.Close)
-
-	cfg := &bootstrap.Config{
+	return &bootstrap.Config{
 		HTTPAddr:           "127.0.0.1:0",
 		LogDir:             logDir,
 		LogLevel:           "INFO",
@@ -90,19 +80,35 @@ func newE2E(t *testing.T, opts e2eOpts) *e2eHarness {
 		MockASRDelay:       opts.MockASRDelay,
 		MockASRFailFirst:   opts.MockASRFailFirst,
 		// LLM 指向进程内 FakeLLM（真实适配器走真实 HTTP 外呼）。
-		LLMBaseURL:      fakeSrv.URL,
+		LLMBaseURL:      llmURL,
 		LLMModel:        "fake-model",
 		LLMAPIKey:       "fake-key",
 		LLMTimeout:      llmTimeout,
 		DBQueryTimeout:  3 * time.Second,
-		ShutdownTimeout: 20 * time.Second,
+		ShutdownTimeout: shutdownTimeout,
 		// 清理循环取大间隔：E2E 删除路径为同步完成（详设 §5.3），503-续做收敛已由
 		// 集成用例覆盖；大间隔避免巡检中途清扫直插种子（如 E2E-08 的 deleting 行）
 		// 造成采集抖动（语义仍为 §10 CLEANUP_INTERVAL 低频循环）。
 		CleanupInterval: time.Hour,
 		RecoveryMode:    "reset",
 	}
+}
 
+// newE2E 装配并启动一台真实服务。opts 逐项透传 Config（对应 MOCK_ASR_* / LLM_TIMEOUT）。
+func newE2E(t *testing.T, opts e2eOpts) *e2eHarness {
+	t.Helper()
+	gin.SetMode(gin.TestMode) // 只关路由注册噪音，不影响真实 HTTP 行为
+	db := requireTestDB(t)
+	dataDir := t.TempDir()
+	logDir := t.TempDir()
+
+	// 摘要段（T07）：真实 LLM 适配器指向进程内 FakeLLM（默认 normal 正常应答），
+	// 服务经 cfg.LLM* 三项与其相连——摘要链路走真实 HTTP，只替身渠道本身。
+	fake := llm.NewFake()
+	fakeSrv := httptest.NewServer(fake)
+	t.Cleanup(fakeSrv.Close)
+
+	cfg := newE2EConfig(opts, fakeSrv.URL, dataDir, logDir, 20*time.Second)
 	srv, _, shutdown, err := bootstrap.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("bootstrap.NewServer 失败: %v", err)
@@ -127,6 +133,66 @@ func newE2E(t *testing.T, opts e2eOpts) *e2eHarness {
 		Fake:     fake,
 		client:   &http.Client{Timeout: 10 * time.Second},
 		shutdown: shutdown,
+	}
+}
+
+// bootApp 重启路径装配（E2E-06）：以给定 Config 全装配一台真实服务并监听真实 TCP——
+// bootstrap.NewApp（T11 起装配内同步执行 §6.2 启动恢复：返回即恢复完成、readyz 可
+// 就绪）。返回 app 与 BaseURL；t.Cleanup 注册幂等收口（Lifecycle.Shutdown 两阶段
+// 退出并关 DB）。A/B 两代服务各调一次即「同库同目录重启」。
+func bootApp(t *testing.T, cfg *bootstrap.Config) (*bootstrap.App, string) {
+	t.Helper()
+	app, err := bootstrap.NewApp(cfg)
+	if err != nil {
+		t.Fatalf("bootstrap.NewApp 失败: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听失败: %v", err)
+	}
+	go func() { _ = app.Server.Serve(ln) }()
+	t.Cleanup(func() {
+		app.Lifecycle.Shutdown() // 幂等
+		_ = ln.Close()
+		_ = app.Server.Close()
+	})
+	return app, "http://" + ln.Addr().String()
+}
+
+// attach 把一台已装配服务包成 harness 视图（共享测试库与目录，E2E-06 A/B 各一），
+// 复用上传/轮询/事件链采集助手。
+func attach(t *testing.T, db *gorm.DB, app *bootstrap.App, baseURL string, fake *llm.FakeLLM, dataDir, logDir string) *e2eHarness {
+	return &e2eHarness{
+		t:        t,
+		DB:       db,
+		BaseURL:  baseURL,
+		DataDir:  dataDir,
+		LogDir:   logDir,
+		Fake:     fake,
+		client:   &http.Client{Timeout: 10 * time.Second},
+		shutdown: app.Lifecycle.Shutdown,
+	}
+}
+
+// pollReadyz 轮询 GET /readyz 至 200 或期限（T11 详设 §6.2：恢复完成后才就绪）；
+// 期限内未就绪 Fatal。返回最终状态码（即 200）。
+func (h *e2eHarness) pollReadyz(timeout time.Duration) int {
+	h.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		resp, err := h.client.Get(h.BaseURL + "/readyz")
+		if err == nil {
+			code := resp.StatusCode
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if code == http.StatusOK {
+				return code
+			}
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("/readyz 未在 %s 内就绪（详设 §6.2）", timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

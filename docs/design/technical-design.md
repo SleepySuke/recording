@@ -689,6 +689,7 @@ code 为 JSON 整数，Go 定义具名整数类型 ErrorCode 与显式常量。�
 | 503 | 90002 | DATABASE_UNAVAILABLE | 数据库暂不可用；事务提交结果可能未知 |
 | 503 | 90003 | FILE_STORAGE_UNAVAILABLE | 文件落盘暂不可用 |
 | 503 | 20006 | RECORDING_DELETE_PENDING | 已标记删除，清理尚未完成 |
+| 503 | 90005 | SERVICE_NOT_READY | 服务未就绪（启动恢复未完成 / 退出 drain 中），不接收上传（§6.2 独占窗口） |
 | 500 | 90001 | INTERNAL_ERROR | 未分类内部错误，不暴露实现细节 |
 | 500 | 90004 | DATA_INCONSISTENT | 逻辑关联异常（正常录音缺任务等），记录告警 |
 

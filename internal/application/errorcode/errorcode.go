@@ -28,6 +28,7 @@ const (
 	CodeFileStorageUnavailable ErrorCode = 90003 // 文件落盘暂不可用
 	CodeInternalError          ErrorCode = 90001 // 未分类内部错误
 	CodeDataInconsistent       ErrorCode = 90004 // 逻辑关联异常
+	CodeServiceNotReady        ErrorCode = 90005 // 服务未就绪（启动恢复未完成/退出 drain），不接收上传
 )
 
 // AppError 应用错误：携带业务码与可选原因，由接口层映射为统一 JSON 错误响应（详设 §8.2）。
@@ -70,6 +71,7 @@ var registry = map[ErrorCode]registryEntry{
 	CodeFileStorageUnavailable: {503, "文件存储暂不可用"},
 	CodeInternalError:          {500, "内部错误"},
 	CodeDataInconsistent:       {500, "数据关联异常"},
+	CodeServiceNotReady:        {503, "服务未就绪，暂不接收上传"},
 
 	// 异步执行错误码 —— 只进 tasks.error_code，不映射 HTTP（详设 §8.4）
 	CodeServiceInterrupted: {0, "服务重启中断了任务，请手动重试"},
@@ -118,4 +120,5 @@ var mnemonic = map[ErrorCode]string{
 	CodeFileStorageUnavailable: "FILE_STORAGE_UNAVAILABLE",
 	CodeInternalError:          "INTERNAL_ERROR",
 	CodeDataInconsistent:       "DATA_INCONSISTENT",
+	CodeServiceNotReady:        "SERVICE_NOT_READY",
 }

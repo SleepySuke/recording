@@ -28,6 +28,9 @@ type ProcessingTxGORM struct {
 	logger     *slog.Logger
 }
 
+// 编译期保证同一适配器实现 RecoveryTx 端口（T11，详设 §6.2）。
+var _ ports.RecoveryTx = (*ProcessingTxGORM)(nil)
+
 // NewProcessingTx 构造流水线事务端口实现；instanceID 与 logger 用于事件构造与提交后镜像（§7.4）。
 func NewProcessingTx(db *gorm.DB, instanceID string, logger *slog.Logger) *ProcessingTxGORM {
 	return &ProcessingTxGORM{db: db, instanceID: instanceID, logger: logger}
@@ -439,4 +442,178 @@ func (t *ProcessingTxGORM) FailTask(ctx context.Context, key domain.ExecutionKey
 	}
 	logging.MirrorEvent(t.logger, event)
 	return nil
+}
+
+// InspectIntegrity 关联巡检（详设 §6.2 步骤 3、§4.6）：LEFT JOIN 检查孤立任务
+// （tasks 无对应 recordings）与非删除中缺任务的录音（recordings.deleting_at IS NULL
+// 且无 tasks 行）；删除中缺任务允许继续幂等清理，不算异常。异常返回包装
+// ErrDataInconsistent 的错误并携带资源 ID，不静默修复——调用方记录 90004 并阻止
+// ready。巡检只读，不加锁、不写库。
+func (t *ProcessingTxGORM) InspectIntegrity(ctx context.Context) error {
+	var orphans []struct {
+		ID          string `gorm:"column:id"`
+		RecordingID string `gorm:"column:recording_id"`
+	}
+	if err := t.db.WithContext(ctx).Raw(
+		`SELECT t.id AS id, t.recording_id AS recording_id
+		 FROM tasks t LEFT JOIN recordings r ON r.id = t.recording_id
+		 WHERE r.id IS NULL`,
+	).Scan(&orphans).Error; err != nil {
+		return fmt.Errorf("巡检孤立任务失败: %w", err)
+	}
+
+	var missing []struct {
+		ID string `gorm:"column:id"`
+	}
+	if err := t.db.WithContext(ctx).Raw(
+		`SELECT r.id AS id
+		 FROM recordings r LEFT JOIN tasks t ON t.recording_id = r.id
+		 WHERE r.deleting_at IS NULL AND t.id IS NULL`,
+	).Scan(&missing).Error; err != nil {
+		return fmt.Errorf("巡检缺任务录音失败: %w", err)
+	}
+
+	if len(orphans) == 0 && len(missing) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(orphans)+len(missing))
+	for _, o := range orphans {
+		ids = append(ids, "task="+o.ID)
+	}
+	for _, m := range missing {
+		ids = append(ids, "recording="+m.ID)
+	}
+	return fmt.Errorf("%w: 孤立任务 %d 个、非删除中缺任务录音 %d 个: %v",
+		ports.ErrDataInconsistent, len(orphans), len(missing), ids)
+}
+
+// ResetInFlight 单事务批量重置在途任务（详设 §6.2 步骤 5 / §6.3 降级变体）：
+// 读取在途行（事件需逐任务 previous 状态与轮次）→ 每任务经领域 TransitionForRecovery
+// 校验出边 → 单条按状态的批量更新（防御性条件）→ 同事务逐任务追加 task_recovered
+// （reset）或 task_interrupted（interrupt）→ COMMIT。任一步失败整体回滚并阻止启动
+// （§6.2 步骤 5）。批量为单条 UPDATE、绕过 Transition 的 attempt 校验：启动恢复处于
+// 单实例独占窗口（无 worker、无并发写者，详设 §4.1「恢复 vs 一切」），attempt 必然
+// 匹配；WHERE 的状态条件即防御性复核。
+func (t *ProcessingTxGORM) ResetInFlight(ctx context.Context, interrupt bool) (int, error) {
+	tx := t.db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return 0, fmt.Errorf("开启重置事务失败: %w", tx.Error)
+	}
+
+	var tasks []TaskPO
+	if err := tx.Where("status IN ?", []string{string(domain.StatusTranscribing), string(domain.StatusSummarizing)}).
+		Order("id").Find(&tasks).Error; err != nil {
+		_ = tx.Rollback().Error
+		return 0, fmt.Errorf("扫描在途任务失败: %w", err)
+	}
+	if len(tasks) == 0 {
+		_ = tx.Rollback().Error
+		return 0, nil
+	}
+
+	// 领域校验（详设 §4.1 恢复两行）：出边合法性以状态机为权威。
+	target := domain.StatusPending
+	if interrupt {
+		target = domain.StatusFailed
+	}
+	events := make([]domain.TaskEvent, 0, len(tasks))
+	now := time.Now().UTC()
+	for i := range tasks {
+		from := domain.TaskStatus(tasks[i].Status)
+		// 事件序号沿用任务行分配器（详设 §7.2）：自已提交的 event_seq 递增。
+		domTask := domain.ProcessingTask{Status: from, EventSeq: tasks[i].EventSeq}
+		if err := domTask.TransitionForRecovery(target); err != nil {
+			_ = tx.Rollback().Error
+			return 0, fmt.Errorf("任务 %s 恢复出边校验失败: %w", tasks[i].ID, err)
+		}
+		seq := domTask.AllocateEventSeq()
+
+		eventAttempt := tasks[i].Attempt
+		kind, level := domain.EventTaskRecovered, domain.LevelInfo
+		var code *int
+		msg := ""
+		if interrupt {
+			kind, level = domain.EventTaskInterrupted, domain.LevelWarn
+			c := int(errorcode.CodeServiceInterrupted)
+			code, msg = &c, errorcode.CodeServiceInterrupted.Message()
+		} else {
+			eventAttempt++ // reset 进入新轮次（§6.2 步骤 5 attempt+1）
+		}
+		to := target
+		events = append(events, domain.TaskEvent{
+			EventID:          uuid.New(),
+			TaskID:           tasks[i].ID,
+			RecordingID:      tasks[i].RecordingID,
+			EventSeq:         seq,
+			Attempt:          eventAttempt,
+			Kind:             kind,
+			OccurredAt:       now,
+			Level:            level,
+			FromStatus:       &from,
+			ToStatus:         &to,
+			CreatedRequestID: tasks[i].CreatedRequestID,
+			InstanceID:       t.instanceID,
+			ErrorCode:        code,
+			ErrorMessage:     msg,
+			Details: map[string]any{
+				"previous_attempt": tasks[i].Attempt,
+				"previous_status":  tasks[i].Status,
+			},
+		})
+	}
+
+	// 单条批量更新（详设 §6.2 步骤 5 SQL 形态），状态条件为防御性复核。
+	updates := map[string]any{
+		"status":     string(target),
+		"event_seq":  gorm.Expr("event_seq + 1"),
+		"updated_at": now,
+	}
+	if interrupt {
+		updates["error_code"] = int(errorcode.CodeServiceInterrupted)
+		updates["error_message"] = errorcode.CodeServiceInterrupted.Message()
+		updates["finished_at"] = now
+	} else {
+		updates["attempt"] = gorm.Expr("attempt + 1")
+		updates["transcript"] = nil
+		updates["summary_json"] = nil
+		updates["error_code"] = nil
+		updates["error_message"] = nil
+		updates["started_at"] = nil
+		updates["finished_at"] = nil
+	}
+	res := tx.Model(&TaskPO{}).
+		Where("status IN ?", []string{string(domain.StatusTranscribing), string(domain.StatusSummarizing)}).
+		Updates(updates)
+	if res.Error != nil {
+		_ = tx.Rollback().Error
+		return 0, fmt.Errorf("批量重置在途任务失败: %w", res.Error)
+	}
+	if res.RowsAffected != int64(len(tasks)) {
+		// 独占窗口内不应发生（无并发写者）；防御回滚（§6.2「任一失败整体回滚」）。
+		_ = tx.Rollback().Error
+		return 0, fmt.Errorf("批量重置影响 %d 行, want %d（独占窗口内出现并发写者）", res.RowsAffected, len(tasks))
+	}
+
+	for i := range events {
+		if err := tx.Create(toTaskEventPO(events[i])).Error; err != nil {
+			_ = tx.Rollback().Error
+			return 0, fmt.Errorf("写入 %s 事件失败: %w", events[i].Kind, err)
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
+		return 0, fmt.Errorf("%w: %v", ports.ErrCommitUnknown, err)
+	}
+	for i := range events {
+		logging.MirrorEvent(t.logger, events[i])
+	}
+	return len(tasks), nil
+}
+
+// ListStoragePaths 全部录音的 storage_path（详设 §5.2 孤儿核对引用集）。
+func (t *ProcessingTxGORM) ListStoragePaths(ctx context.Context) ([]string, error) {
+	var paths []string
+	if err := t.db.WithContext(ctx).Model(&RecordingPO{}).Pluck("storage_path", &paths).Error; err != nil {
+		return nil, fmt.Errorf("查询 storage_path 引用集失败: %w", err)
+	}
+	return paths, nil
 }

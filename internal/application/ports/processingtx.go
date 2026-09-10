@@ -43,3 +43,21 @@ type ProcessingTx interface {
 	// 50003）共用；条件未命中返回 ErrStaleExecution（详设 §4.1/§4.4）。
 	FailTask(ctx context.Context, key domain.ExecutionKey, code errorcode.ErrorCode, msg string) error
 }
+
+// RecoveryTx 启动恢复端口（详设 §6.2 步骤 3/5、§6.3 降级变体、§4.6 关联巡检、
+// §5.2 孤儿核对的引用集查询）：由 ProcessingTx 的同一 MySQL 适配器实现；
+// 恢复在单实例独占窗口执行（无 worker、无上传，§4.1「恢复 vs 一切」）。
+type RecoveryTx interface {
+	// InspectIntegrity 关联巡检（§6.2 步骤 3）：LEFT JOIN 孤立任务（task 无 recording）
+	// 与非删除中缺任务的录音；异常返回包装 ErrDataInconsistent（90004）的错误并携带
+	// 资源 ID，不静默修复（§4.6）——调用方据此阻止 ready。
+	InspectIntegrity(ctx context.Context) error
+	// ResetInFlight 单事务批量重置在途任务（§6.2 步骤 5 / §6.3）：interrupt=false →
+	// transcribing/summarizing → pending、attempt+1、清空产物/错误/本轮时间 +
+	// task_recovered（details 记 previous_attempt 与原状态）；true → failed/30003 +
+	// task_interrupted。更新与事件同一事务，任一失败整体回滚；返回受影响任务数。
+	ResetInFlight(ctx context.Context, interrupt bool) (int, error)
+	// ListStoragePaths 全部录音的 storage_path 集合（§5.2 孤儿核对的引用集；
+	// 查询失败时调用方不得执行清理）。
+	ListStoragePaths(ctx context.Context) ([]string, error)
+}

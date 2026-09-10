@@ -1,0 +1,79 @@
+{
+  "upload": {
+    "http_status": 202,
+    "recording_id": "<recording_id>",
+    "task_id": "<task_id>",
+    "status": "pending"
+  },
+  "status_at_stop": "transcribing",
+  "readyz_after_restart": 200,
+  "task_after_restart": {
+    "http_status": 200,
+    "status": "done",
+    "attempt": 2
+  },
+  "storage_dir_files": 1,
+  "table_counts": {
+    "recordings": 1,
+    "task_events": 6,
+    "tasks": 1
+  },
+  "event_chain": [
+    {
+      "event_seq": 1,
+      "event": "task_created",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": null,
+      "to_status": "pending"
+    },
+    {
+      "event_seq": 2,
+      "event": "task_claimed",
+      "attempt": 1,
+      "error_code": null,
+      "from_status": "pending",
+      "to_status": "transcribing"
+    },
+    {
+      "event_seq": 3,
+      "event": "task_recovered",
+      "attempt": 2,
+      "error_code": null,
+      "from_status": "transcribing",
+      "to_status": "pending"
+    },
+    {
+      "event_seq": 4,
+      "event": "task_claimed",
+      "attempt": 2,
+      "error_code": null,
+      "from_status": "pending",
+      "to_status": "transcribing"
+    },
+    {
+      "event_seq": 5,
+      "event": "transcription_completed",
+      "attempt": 2,
+      "error_code": null,
+      "from_status": "transcribing",
+      "to_status": "summarizing"
+    },
+    {
+      "event_seq": 6,
+      "event": "task_completed",
+      "attempt": 2,
+      "error_code": null,
+      "from_status": "summarizing",
+      "to_status": "done"
+    }
+  ],
+  "mirror_events": [
+    "task_created",
+    "task_claimed",
+    "task_recovered",
+    "task_claimed",
+    "transcription_completed",
+    "task_completed"
+  ]
+}

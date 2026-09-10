@@ -29,6 +29,7 @@ func TestUT08_ErrorCodeRegistry(t *testing.T) {
 		{errorcode.CodeFileStorageUnavailable, 503},
 		{errorcode.CodeInternalError, 500},
 		{errorcode.CodeDataInconsistent, 500},
+		{errorcode.CodeServiceNotReady, 503},
 	}
 	asyncCodes := []errorcode.ErrorCode{
 		errorcode.CodeASRFailed,

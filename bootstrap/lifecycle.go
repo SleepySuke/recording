@@ -27,25 +27,31 @@ type Lifecycle struct {
 	cancelCleanup context.CancelFunc // 阶段 1 停清理循环（与停认领同时，§3.5 第 1 条）
 	waitCleanup   func()             // 清理循环 WaitGroup 收口
 	closeDB       func() error       // 关闭数据库连接池
+	notReady      func()             // 阶段 1 置 /readyz 非就绪（T11；nil = 无门控）
 
 	once     sync.Once
 	dbClosed atomic.Bool
 }
 
-// NewLifecycle 构造协调器；各句柄由 NewApp 装配传入。
+// NewLifecycle 构造协调器；各句柄由 NewApp 装配传入。notReady 在 Drain 时调用
+// （§3.5 第 1 条起服务不再就绪），可为 nil。
 func NewLifecycle(timeout time.Duration, logger *slog.Logger, srv *http.Server, pool *worker.Pool,
-	cancelRun, cancelCleanup context.CancelFunc, waitCleanup func(), closeDB func() error) *Lifecycle {
+	cancelRun, cancelCleanup context.CancelFunc, waitCleanup func(), closeDB func() error, notReady func()) *Lifecycle {
 	return &Lifecycle{
 		timeout: timeout, logger: logger, srv: srv, pool: pool,
 		cancelRun: cancelRun, cancelCleanup: cancelCleanup, waitCleanup: waitCleanup, closeDB: closeDB,
+		notReady: notReady,
 	}
 }
 
-// Drain 阶段 1（§3.5 第 1 条）：停认领（取消 claimCtx）并停清理循环；在途任务
-// 继续以 runCtx 执行。幂等、不等待。readyz 置 false 的门控在 T11 接入。
+// Drain 阶段 1（§3.5 第 1 条）：停认领（取消 claimCtx）并停清理循环，同时置
+// /readyz 非就绪（不再接收新流量）；在途任务继续以 runCtx 执行。幂等、不等待。
 func (lc *Lifecycle) Drain() {
 	lc.pool.Drain()
 	lc.cancelCleanup()
+	if lc.notReady != nil {
+		lc.notReady()
+	}
 }
 
 // Shutdown 执行完整两阶段退出；幂等，阻塞至完成。所有等待有界（§3.5 第 4 条）：
@@ -63,14 +69,18 @@ func (lc *Lifecycle) Shutdown() {
 		if err := lc.srv.Shutdown(budgetCtx); err != nil {
 			lc.logger.Warn("HTTP drain 未在预算内完成", slog.Any("err", err))
 		}
-		select {
-		case <-lc.pool.Done():
-			lc.logger.Info("在途任务收尾完成")
-		case <-budgetCtx.Done():
-			// 阶段 3（超预算）：取消 runCtx 强停在途外呼，等待 worker 收尾（§3.5 第 4 条）。
-			lc.logger.Warn("drain 超预算，取消 runCtx 强停在途任务")
-			lc.cancelRun()
-			lc.waitBounded("worker 强停收尾", lc.pool.Stop)
+		// 池未启动（T11 巡检失败阻止启动的分支）无在途可等，直接收口；
+		// 未启动池的 done 永不关闭，等待会白耗整个预算。
+		if lc.pool.Started() {
+			select {
+			case <-lc.pool.Done():
+				lc.logger.Info("在途任务收尾完成")
+			case <-budgetCtx.Done():
+				// 阶段 3（超预算）：取消 runCtx 强停在途外呼，等待 worker 收尾（§3.5 第 4 条）。
+				lc.logger.Warn("drain 超预算，取消 runCtx 强停在途任务")
+				lc.cancelRun()
+				lc.waitBounded("worker 强停收尾", lc.pool.Stop)
+			}
 		}
 		lc.waitBounded("清理循环退出", lc.waitCleanup)
 		if err := lc.closeDB(); err != nil {

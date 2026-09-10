@@ -33,4 +33,7 @@ type FileStore interface {
 	Save(ctx context.Context, src io.Reader, ext string) (StoredFile, error)
 	// Delete 删除文件；不存在视为成功（删除幂等清理，详设 §5.3）。
 	Delete(ctx context.Context, storagePath string) error
+	// ListStored 列出数据目录内全部文件名（含 tmp-，详设 §5.2）：孤儿文件核对
+	// 的盘侧视图；列出失败时调用方不得执行清理。
+	ListStored(ctx context.Context) ([]string, error)
 }

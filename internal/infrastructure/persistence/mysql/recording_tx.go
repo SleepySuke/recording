@@ -339,7 +339,7 @@ func toTaskEventPO(e domain.TaskEvent) *TaskEventPO {
 		Attempt:          e.Attempt,
 		Event:            string(e.Kind),
 		OccurredAt:       e.OccurredAt,
-		Level:            e.Level,
+		Level:            string(e.Level),
 		FromStatus:       statusPtr(e.FromStatus),
 		ToStatus:         statusPtr(e.ToStatus),
 		Stage:            e.Stage,
